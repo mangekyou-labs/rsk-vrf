@@ -1,0 +1,34 @@
+== testnet block 8206630 gasLimit 12000000 client RskJ/9.0.3/Linux/Java17/VETIVER-c19cf12
+  chainlink VRF.sol (crosschain-prover copy) mode=0: ok=True verifyGas=49086 out=0x32141a9c258630de... | estimateGas=184985 | initcode=4066B calldataGas=62572
+  chainlink VRF.sol (crosschain-prover copy) mode=1: call={"code": -32015, "message": "VM Exception while processing transaction: revert addr(c*pk+s*g)!=_uWitness", "data": "0x08c379a00000000000000000000000000000000000 | estimateGas={"code": -32015, "message": "VM Exception while processing transaction: revert addr(c*pk+s*g)!=_uWitness", "data": "0x08c379a00000000000000000000000000000000000 | initcode=4066B calldataGas=62584
+  chainlink VRF.sol (crosschain-prover copy) mode=2: call={"code": -32015, "message": "VM Exception while processing transaction: revert Second mul check failed", "data": "0x08c379a0000000000000000000000000000000000000 | estimateGas={"code": -32015, "message": "VM Exception while processing transaction: revert Second mul check failed", "data": "0x08c379a0000000000000000000000000000000000000 | initcode=4066B calldataGas=62584
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=0: ok=True verifyGas=43071 out=0x201469f65c1540ac... | estimateGas=161616 | initcode=2939B calldataGas=45428
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=1: ok=False verifyGas=41040 out=0x0000000000000000... | estimateGas=159603 | initcode=2939B calldataGas=45440
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=2: ok=False verifyGas=105650 out=0x0000000000000000... | estimateGas=224310 | initcode=2939B calldataGas=45440
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=3: ok=False verifyGas=360 out=0x0000000000000000... | estimateGas=118935 | initcode=2939B calldataGas=45440
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=0: ok=True verifyGas=1611554 out=0x612065e309e937ef... | estimateGas=1782021 | initcode=6279B calldataGas=95148
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=1: ok=True verifyGas=82597 out=0x612065e309e937ef... | estimateGas=253003 | initcode=6279B calldataGas=95160
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=2: ok=False verifyGas=1608738 out=0x612065e309e937ef... | estimateGas=1779243 | initcode=6279B calldataGas=95160
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=3: ok=False verifyGas=40583 out=0x612065e309e937ef... | estimateGas=211025 | initcode=6279B calldataGas=95160
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=0: ok=True verifyGas=179315 out=0x4da14d73e62d0c90... | estimateGas=303482 | initcode=3301B calldataGas=51220
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=1: ok=False verifyGas=177930 out=0x0000000000000000... | estimateGas=302212 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=2: ok=False verifyGas=177930 out=0x0000000000000000... | estimateGas=302218 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=3: ok=True verifyGas=63521 out=0x29af84618ff2f541... | estimateGas=187688 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=4: ok=False verifyGas=177916 out=0x0000000000000000... | estimateGas=302146 | initcode=3301B calldataGas=51232
+== mainnet block 9343377 gasLimit 10000000 client RskJ/9.0.3/Linux/Java17/VETIVER-c19cf12
+  chainlink VRF.sol (crosschain-prover copy) mode=0: ok=True verifyGas=49086 out=0x32141a9c258630de... | estimateGas=184985 | initcode=4066B calldataGas=62572
+  chainlink VRF.sol (crosschain-prover copy) mode=1: call={"code": -32015, "message": "VM Exception while processing transaction: revert addr(c*pk+s*g)!=_uWitness", "data": "0x08c379a00000000000000000000000000000000000 | estimateGas={"code": -32015, "message": "VM Exception while processing transaction: revert addr(c*pk+s*g)!=_uWitness", "data": "0x08c379a00000000000000000000000000000000000 | initcode=4066B calldataGas=62584
+  chainlink VRF.sol (crosschain-prover copy) mode=2: call={"code": -32015, "message": "VM Exception while processing transaction: revert Second mul check failed", "data": "0x08c379a0000000000000000000000000000000000000 | estimateGas={"code": -32015, "message": "VM Exception while processing transaction: revert Second mul check failed", "data": "0x08c379a0000000000000000000000000000000000000 | initcode=4066B calldataGas=62584
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=0: ok=True verifyGas=43071 out=0x201469f65c1540ac... | estimateGas=161616 | initcode=2939B calldataGas=45428
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=1: ok=False verifyGas=41040 out=0x0000000000000000... | estimateGas=159603 | initcode=2939B calldataGas=45440
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=2: ok=False verifyGas=105650 out=0x0000000000000000... | estimateGas=224310 | initcode=2939B calldataGas=45440
+  RFC 9381-style ECVRF secp256k1 via RSKIP516 mode=3: ok=False verifyGas=360 out=0x0000000000000000... | estimateGas=118935 | initcode=2939B calldataGas=45440
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=0: ok=True verifyGas=1611554 out=0x612065e309e937ef... | estimateGas=1782021 | initcode=6279B calldataGas=95148
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=1: ok=True verifyGas=82597 out=0x612065e309e937ef... | estimateGas=253003 | initcode=6279B calldataGas=95160
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=2: ok=False verifyGas=1608738 out=0x612065e309e937ef... | estimateGas=1779243 | initcode=6279B calldataGas=95160
+  witnet VRF.verify / fastVerify (modes 0/1; 2/3 tampered) mode=3: ok=False verifyGas=40583 out=0x612065e309e937ef... | estimateGas=211025 | initcode=6279B calldataGas=95160
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=0: ok=True verifyGas=179315 out=0x4da14d73e62d0c90... | estimateGas=303482 | initcode=3301B calldataGas=51220
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=1: ok=False verifyGas=177930 out=0x0000000000000000... | estimateGas=302212 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=2: ok=False verifyGas=177930 out=0x0000000000000000... | estimateGas=302218 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=3: ok=True verifyGas=63521 out=0x29af84618ff2f541... | estimateGas=187688 | initcode=3301B calldataGas=51232
+  drand evmnet BN254 (3 = hash-to-G1 only, 4 = off-curve sig) mode=4: ok=False verifyGas=177916 out=0x0000000000000000... | estimateGas=302146 | initcode=3301B calldataGas=51232

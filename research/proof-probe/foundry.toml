@@ -1,0 +1,10 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 200
+# Compile without PUSH0/MCOPY/TSTORE so bytecode is accepted by any recent RSKj network.
+evm_version = "paris"
+auto_detect_solc = true
