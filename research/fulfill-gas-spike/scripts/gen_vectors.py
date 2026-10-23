@@ -1,4 +1,4 @@
-"""Generate proof vectors for the rsk-vrf proof probe and emit test/Vectors.sol.
+"""Generate proof vectors for the rsk-vrf proof probe and emit src/Vectors.sol.
 
 Run from anywhere with:  python3 -I scripts/gen_vectors.py <probe_root> <drand_round_json> <drand_info_json>
 

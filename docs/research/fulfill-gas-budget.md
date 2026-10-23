@@ -14,7 +14,7 @@ Spike code: [`research/fulfill-gas-spike/`](../../research/fulfill-gas-spike/). 
 | `request` / `requestWithCallback` | 100k–127k (see table) |
 | `timeoutRefund` | 31k to an existing requester; 56k if the requester has no account |
 | `withdrawFees` | 30k |
-| Against the 10M per-tx cap | Every path is far below it. The cap would need ~630 hash-to-curve iterations (probability 2⁻⁶³⁰), or a Callback Gas Cap above ~9.3M; the cap's upper bound is 2.5M. |
+| Against the 10M per-tx cap | Every path is far below it. The cap would need ~630 hash-to-curve iterations (probability 2⁻⁶³⁰), or a Callback Gas Cap above ~9.5M; the cap's upper bound is 2.5M. |
 | **`CALLBACK_RESERVE`** | **10,000** (measured need: 2,009 above the cap, or 25,853 in total when the requester has no account; see below) |
 | **Flat fee** | **2 × 10¹³ wei = 0.00002 rBTC** |
 | Coordinator runtime bytecode | 21,236 B, leaving 3,340 B under the 24,576 B limit. The verifiers stay in the coordinator. |
@@ -37,7 +37,7 @@ The spike coordinator (`research/fulfill-gas-spike/src/VRFCoordinator.sol`) foll
   9. a low-level `call(cap, …)` with no return-data copy;
   10. `CallbackFailed` if that call fails.
 
-Fifteen Foundry tests cover the happy path and every revert. Those tests use a Python prover over ffi.
+Fifteen Foundry tests cover the happy path, the burner callback and the request, `fulfill` and refund reverts. Those tests use a Python prover over ffi. Foundry does not test the `InsufficientGasForCallback` boundary, because Foundry's EVM applies the 63/64 rule and RSK does not. That boundary is measured on the RSK nodes instead (see `CALLBACK_RESERVE`).
 
 The public nodes have no state overrides (the request returns HTTP 400), and the spike has no funded account. So `src/Harness.sol` runs each scenario inside the constructor of a contract-creation transaction. The scenario deploys the implementation, proxy and consumers, makes the requests, and then performs one measured action. `scripts/measure_rsk.py` sends that transaction with `eth_call` against `latest`.
 
@@ -94,11 +94,11 @@ Timed segments:
 **Fulfill gas is not a single number.** `VRF.sol`'s `_hashToCurve` is try-and-increment. The number of candidates it tries is geometric with p = ½, so P(iterations > k) = 2⁻ᵏ.
 
 - Each extra candidate costs one `_fieldHash` plus one `_squareRoot` (`bigModExp`): about **15,036 gas**.
-- That accounts for the success/burner gap above.
+- The success/burner gap above comes from the burner spending its whole 200k cap. The success proof's 2 extra iterations narrow that gap by about 30k.
 - The 49,086 in "Rootstock Proof Feasibility" was a 2-iteration vector.
 - The Alpha cannot be steered toward cheap iteration counts, because drand randomness and the requestId are bound into it.
 
-Calldata for `fulfill` is 516 B. Counted with every non-selector byte nonzero, it costs 8,100 gas. With RSKIP400, that is 4 gas per zero byte and 16 per nonzero byte.
+Calldata for `fulfill` is 516 B. With the requestId and drand signature counted as all-nonzero and the real proof words, it costs 8,100 gas; mainnet's proof gave 8,076. Even if every byte except the address padding were nonzero, it would cost only about 8,112. With RSKIP400, that is 4 gas per zero byte and 16 per nonzero byte.
 
 **Worst-consumer `fulfill` tx at k iterations** = 21,000 + 8,100 + 477,514 + (k − 1) · 15,036.
 
@@ -113,17 +113,21 @@ A Callback Gas Cap at its 2.5M maximum adds 2.3M to every row.
 
 ### Other entry points
 
-| Call | Execution gas |
-|---|---|
-| `requestWithCallback` through a consumer contract, first request from that requester | 126,537 |
-| `requestWithCallback` through a consumer, steady state | 111,537 |
-| plain `request`, first | 115,441 |
-| plain `request`, steady state | 100,441 |
-| `timeoutRefund` → consumer | 31,348 |
-| `timeoutRefund` → requester with no account | 56,293 |
-| `withdrawFees` | 30,163 |
+| Call | Execution gas | Tx gas (+ 21,000 + calldata) |
+|---|---|---|
+| `requestWithCallback` through a consumer contract, first request from that requester | 126,537 | ≤ 148,113 |
+| `requestWithCallback` through a consumer, steady state | 111,537 | ≤ 133,113 |
+| plain `request`, first | 115,441 | ≤ 137,017 |
+| plain `request`, steady state | 100,441 | ≤ 122,017 |
+| `timeoutRefund` → consumer | 31,348 | ≤ 52,924 |
+| `timeoutRefund` → requester with no account | 56,293 | ≤ 77,869 |
+| `withdrawFees` | 30,163 | ≤ 51,227 |
 
-The consumer rows include the consumer's own frame and the value-carrying CALL. Add 21,000 plus calldata for a transaction. The "first" rows pay one extra 20k SSTORE, for that requester's nonce slot.
+The consumer rows include the consumer's own frame and the value-carrying CALL.
+
+- Calldata bound: 576 gas for a selector plus one `bytes32`, all nonzero; 64 gas for `withdrawFees()`.
+- These are bounds on the transaction gas. They were not searched like the `fulfill` limits, because none of these calls holds gas back the way `fulfill`'s reserve check does.
+- `timeoutRefund` and `withdrawFees` forward all remaining gas to the recipient, so they also pay whatever the recipient's `receive` spends. Here it spent nothing: the test consumer's `receive` is empty. The "first" rows pay one extra 20k SSTORE, for that requester's nonce slot.
 
 ## `CALLBACK_RESERVE`
 
