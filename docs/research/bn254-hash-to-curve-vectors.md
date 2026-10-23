@@ -192,7 +192,7 @@ if __name__=="__main__":
 
 - The Go harness and `ref.py` live outside the repo (temp directory); only `ref.py` is reproduced above. The Go harness is described, not committed.
 - "Independent" is relative: gnark-crypto and the Python port are independent of `BLS.sol` and kyber, but the Keccak-XMD and the 48-byte reduction in my Go and Python code are my own reading of RFC 9380 and share my assumptions. Their agreement with the production drand signer on live beacons is what rules out a shared misreading.
-- Only four rounds were tested. All four took the first-branch/second-branch/third-branch paths I did not instrument; edge cases of SVDW (u with `tv1 = 0`, `x3` branch, u = 0, `g(x) = 0`) are not covered. `mapToPoint` test vectors from `test/vectors/svdw.ts` (Sage-generated) were not re-run through gnark.
+- Only four rounds were tested. I did not instrument which SVDW branch (x1, x2, x3) each sample took; edge cases of SVDW (u with `tv1 = 0`, `x3` branch, u = 0, `g(x) = 0`) are not covered. `mapToPoint` test vectors from `test/vectors/svdw.ts` (Sage-generated) were not re-run through gnark.
 - Solidity was run under Foundry with solc 0.8.24 / cancun (not the repo's hardhat config); `ModExp.sol` was used unmodified.
 - Only G1 (the evmnet signature group) was checked. G2 hash and pairing check in Solidity (`verifySingle`) were not exercised.
 - The statement that the Sage reference was the origin of `test/vectors/svdw.ts` rests on its one-line header comment; I did not locate the Sage script.
