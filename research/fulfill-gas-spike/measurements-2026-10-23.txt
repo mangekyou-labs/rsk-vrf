@@ -1,0 +1,56 @@
+== testnet chainId 31 block 8213365 gasLimit 12000000 gasPrice 6425290 minimumGasPrice 5841173
+  pass 1 alphas: 0xb08a2025bf.. (3 h2c iter), 0xcf5cd8dff3.. (1 h2c iter), 0x5cef88ae1e.. (1 h2c iter), 0x57bac5be8a.. (2 h2c iter)
+  fulfill success consumer           exec= 326799  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill burner consumer            exec= 477514  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill requester has no code      exec= 301320  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill plain request (cap 0)      exec= 290337  status=2 betaNonzero=True payeeBalance=40000000000000
+  request, consumer->requestWithCallback  first=126537  steady=111537  (incl. consumer frame + value CALL)
+  request, plain from harness             first=115441  steady=100441
+  timeoutRefund -> consumer=31348  -> nonexistent account=56293  (nonexistent got 40000000000000 wei)
+  withdrawFees (after a fulfill) exec=30163  balanceAfter=0
+  segment VRF.sol verify=64411  drand BN254 verify=183446  drandRandomnessOk=True
+  eth_estimateGas(harness baseline) = 6800000  (node estimation cap, see min-limit search)
+  min tx gas limit: baseline=6999861 +fulfillSuccess=7452737 (delta 452876) +fulfillBurner=7475913 (delta 476052)
+  VRF.sol verify by h2c iterations: 1 -> 34338, 2 -> 49365, 4 -> 79439, 8 -> 139593
+    per extra iteration ~ 15036 gas
+  fulfill calldata 516B -> 8100 gas; worst tx = 21000 + 8100 + 477514 = 506614  (< 10000000: True)
+  burner fulfill min gas: R=0 -> 473906 (below: 0x0);  R=60000 -> 531897 (below: InsufficientGasForCallback)
+  => gasleft at the reserve check must be >= cap + 2009 for the burner fulfill to complete
+  success fulfill min gas with R=0: 501978 (below: InsufficientGasForCallback)
+    check R=2008: min gas 473906, just below reverts with 0x0
+    check R=2009: min gas 473906, just below reverts with InsufficientGasForCallback
+    check R=7009: min gas 478906, just below reverts with InsufficientGasForCallback
+  no-account requester, cap 1: min gas R=0 -> 297712 (below: 0x0);  R=60000 -> 331859 (below: InsufficientGasForCallback)
+  => gasleft at the reserve check must be >= cap + 25853 when the requester has no account
+    check R=25852: min gas 297712, just below reverts with 0x0
+    check R=25853: min gas 297712, just below reverts with InsufficientGasForCallback
+== mainnet chainId 30 block 9348819 gasLimit 10000000 gasPrice 26065600 minimumGasPrice 23696000
+  pass 1 alphas: 0xb9555c8606.. (1 h2c iter), 0x6ff7cb452d.. (1 h2c iter), 0x285862f639.. (2 h2c iter), 0x9e80533841.. (3 h2c iter)
+  fulfill success consumer           exec= 296679  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill burner consumer            exec= 477504  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill requester has no code      exec= 316409  status=2 betaNonzero=True payeeBalance=40000000000000
+  fulfill plain request (cap 0)      exec= 305398  status=2 betaNonzero=True payeeBalance=40000000000000
+  request, consumer->requestWithCallback  first=126537  steady=111537  (incl. consumer frame + value CALL)
+  request, plain from harness             first=115441  steady=100441
+  timeoutRefund -> consumer=31348  -> nonexistent account=56293  (nonexistent got 40000000000000 wei)
+  withdrawFees (after a fulfill) exec=30163  balanceAfter=0
+  segment VRF.sol verify=34299  drand BN254 verify=183446  drandRandomnessOk=True
+  eth_estimateGas(harness baseline) = 6800000  (node estimation cap, see min-limit search)
+  min tx gas limit: baseline=6999849 +fulfillSuccess=7422605 (delta 422756) +fulfillBurner=7475891 (delta 476042)
+  VRF.sol verify by h2c iterations: 1 -> 34338, 2 -> 49365, 4 -> 79439, 8 -> 139593
+    per extra iteration ~ 15036 gas
+  fulfill calldata 516B -> 8076 gas; worst tx = 21000 + 8076 + 477504 = 506580  (< 10000000: True)
+  burner fulfill min gas: R=0 -> 473896 (below: 0x0);  R=60000 -> 531887 (below: InsufficientGasForCallback)
+  => gasleft at the reserve check must be >= cap + 2009 for the burner fulfill to complete
+  success fulfill min gas with R=0: 471858 (below: InsufficientGasForCallback)
+    check R=2008: min gas 473896, just below reverts with 0x0
+    check R=2009: min gas 473896, just below reverts with InsufficientGasForCallback
+    check R=7009: min gas 478896, just below reverts with InsufficientGasForCallback
+  no-account requester, cap 1: min gas R=0 -> 312801 (below: 0x0);  R=60000 -> 346948 (below: InsufficientGasForCallback)
+  => gasleft at the reserve check must be >= cap + 25853 when the requester has no account
+    check R=25852: min gas 312801, just below reverts with 0x0
+    check R=25853: min gas 312801, just below reverts with InsufficientGasForCallback
+== mode 15 (no-account requester at the real 200k cap), same script's min_gas, run separately after the above
+testnet: R=0 -> min gas 471858, just below reverts with InsufficientGasForCallback; R=10000 -> 481858, InsufficientGasForCallback
+  raw: mainnet 0 (486947, 'InsufficientGasForCallback')
+  raw: mainnet 10000 (496947, 'InsufficientGasForCallback')
