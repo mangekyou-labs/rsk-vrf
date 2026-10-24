@@ -276,4 +276,7 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("wrote %d vectors to %s\n", len(file.Vectors), defaultOut)
+	if err := writeCoordinator(); err != nil {
+		log.Fatal(err)
+	}
 }
