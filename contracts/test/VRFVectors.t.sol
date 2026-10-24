@@ -35,25 +35,25 @@ abstract contract VRFVectorFixture is Test {
     }
 
     function vector(uint256 i) internal view returns (Vector memory v) {
-        string memory k = string.concat(".vectors[", vm.toString(i), "]");
-        string memory p = string.concat(k, ".proof");
-        v.name = vm.parseJsonString(json, string.concat(k, ".name"));
-        v.secretKey = vm.parseJsonUint(json, string.concat(k, ".secretKey"));
-        v.hashToCurveTries = vm.parseJsonUint(json, string.concat(k, ".hashToCurveTries"));
-        v.hash = pair(string.concat(k, ".hash"));
-        v.output = vm.parseJsonUint(json, string.concat(k, ".output"));
-        v.proof.pk = pair(string.concat(p, ".pk"));
-        v.proof.gamma = pair(string.concat(p, ".gamma"));
-        v.proof.c = vm.parseJsonUint(json, string.concat(p, ".c"));
-        v.proof.s = vm.parseJsonUint(json, string.concat(p, ".s"));
-        v.proof.seed = vm.parseJsonUint(json, string.concat(p, ".seed"));
-        v.proof.uWitness = vm.parseJsonAddress(json, string.concat(p, ".uWitness"));
-        v.proof.cGammaWitness = pair(string.concat(p, ".cGammaWitness"));
-        v.proof.sHashWitness = pair(string.concat(p, ".sHashWitness"));
-        v.proof.zInv = vm.parseJsonUint(json, string.concat(p, ".zInv"));
+        string memory at = string.concat(".vectors[", vm.toString(i), "]");
+        string memory proofAt = string.concat(at, ".proof");
+        v.name = vm.parseJsonString(json, string.concat(at, ".name"));
+        v.secretKey = vm.parseJsonUint(json, string.concat(at, ".secretKey"));
+        v.hashToCurveTries = vm.parseJsonUint(json, string.concat(at, ".hashToCurveTries"));
+        v.hash = point(string.concat(at, ".hash"));
+        v.output = vm.parseJsonUint(json, string.concat(at, ".output"));
+        v.proof.pk = point(string.concat(proofAt, ".pk"));
+        v.proof.gamma = point(string.concat(proofAt, ".gamma"));
+        v.proof.c = vm.parseJsonUint(json, string.concat(proofAt, ".c"));
+        v.proof.s = vm.parseJsonUint(json, string.concat(proofAt, ".s"));
+        v.proof.seed = vm.parseJsonUint(json, string.concat(proofAt, ".seed"));
+        v.proof.uWitness = vm.parseJsonAddress(json, string.concat(proofAt, ".uWitness"));
+        v.proof.cGammaWitness = point(string.concat(proofAt, ".cGammaWitness"));
+        v.proof.sHashWitness = point(string.concat(proofAt, ".sHashWitness"));
+        v.proof.zInv = vm.parseJsonUint(json, string.concat(proofAt, ".zInv"));
     }
 
-    function pair(string memory key) private view returns (uint256[2] memory out) {
+    function point(string memory key) private view returns (uint256[2] memory out) {
         uint256[] memory xs = vm.parseJsonUintArray(json, key);
         require(xs.length == 2, "expected a point");
         out = [xs[0], xs[1]];
