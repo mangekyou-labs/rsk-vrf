@@ -31,8 +31,8 @@ describe('nonce', () => {
     }
   });
 
-  it('never gives two distinct Alphas the same k', () => {
-    const sk = BigInt(vectors[0]!.secretKey);
+  it('never gives two distinct Alphas the same k, for any of several keys', () => {
+    const keys = [...new Set([1n, 2n, N - 1n, ...vectors.map((v) => BigInt(v.secretKey))])];
     const max = (1n << 256n) - 1n;
     const alphas = [0n, 1n, 2n, N - 1n, N, N + 1n, max - 1n, max];
     // Alphas that differ by n stay distinct: Alpha is not reduced mod n.
@@ -41,8 +41,9 @@ describe('nonce', () => {
       alphas.push(BigInt('0x' + createHash('sha256').update(`alpha-${i}`).digest('hex')));
     }
     const distinct = [...new Set(alphas)];
-    const ks = new Set(distinct.map((alpha) => nonce(sk, alpha)));
-    assert.equal(ks.size, distinct.length);
+    // No k repeats across any (key, Alpha) pair either.
+    const ks = new Set(keys.flatMap((sk) => distinct.map((alpha) => nonce(sk, alpha))));
+    assert.equal(ks.size, keys.length * distinct.length);
   });
 
   it('is always a valid scalar', () => {
