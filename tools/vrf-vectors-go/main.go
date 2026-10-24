@@ -30,6 +30,7 @@ import (
 	"os"
 	"strings"
 
+	dcrec "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/smartcontractkit/chainlink-common/keystore/corekeys/vrfkey"
 	"github.com/smartcontractkit/chainlink-common/keystore/corekeys/vrfkey/secp256k1"
@@ -72,10 +73,11 @@ type File struct {
 type Vector struct {
 	Name             string `json:"name"`
 	SecretKey        Hex    `json:"secretKey"`
-	Nonce            Hex    `json:"nonce"`
+	K                Hex    `json:"k"`
 	HashToCurveTries int    `json:"hashToCurveTries"`
 	Hash             [2]Hex `json:"hash"`
 	Proof            Proof  `json:"proof"`
+	ProofBytes       Hex    `json:"proofBytes"`
 	Output           Hex    `json:"output"`
 }
 
@@ -133,17 +135,29 @@ func seedNeeding(pk kyber.Point, want int) (*big.Int, error) {
 	return nil, fmt.Errorf("no seed needs %d tries", want)
 }
 
+// rfc6979K returns candidate i of the RFC 6979 HMAC-SHA256 DRBG seeded with
+// sk ‖ seed: the worker's nonce. The seed goes in as its raw 32 bytes, without
+// RFC 6979's reduction mod n, so seeds that differ by n still get different k.
+// decred's implementation is independent of the worker's, so a matching k in
+// the worker tests is a real cross-check.
+func rfc6979K(sk, seed *big.Int, i uint32) *big.Int {
+	b := dcrec.NonceRFC6979(be32(sk), be32(seed), nil, nil, i).Bytes()
+	return new(big.Int).SetBytes(b[:])
+}
+
 func prove(name string, sk, seed *big.Int) (Vector, error) {
 	key := vrfkey.MustNewV2XXXTestingOnly(sk)
-	nonce := keccakInt([]byte("rsk-vrf/vrf-vectors/nonce"), be32(sk), be32(seed))
-	nonce.Mod(nonce, secp256k1.GroupOrder)
-	var p vrfkey.Proof
-	for {
+	var (
+		p vrfkey.Proof
+		k *big.Int
+	)
+	// Like vrfkey.GenerateProof, move on to the next k if c*gamma == s*hash.
+	// That can't happen in practice; the worker does the same.
+	for i := uint32(0); ; i++ {
 		var err error
-		p, err = key.GenerateProofWithNonce(seed, nonce)
+		k = rfc6979K(sk, seed, i)
+		p, err = key.GenerateProofWithNonce(seed, k)
 		if errors.Is(err, vrfkey.ErrCGammaEqualsSHash) {
-			nonce = keccakInt(be32(nonce))
-			nonce.Mod(nonce, secp256k1.GroupOrder)
 			continue
 		}
 		if err != nil {
@@ -158,26 +172,51 @@ func prove(name string, sk, seed *big.Int) (Vector, error) {
 	}
 
 	w := solidityWitnesses(p, h)
+	proof := Proof{
+		PK:            point(p.PublicKey),
+		Gamma:         point(p.Gamma),
+		C:             hexWord(p.C),
+		S:             hexWord(p.S),
+		Seed:          hexWord(seed),
+		UWitness:      Hex("0x" + hex.EncodeToString(w.uWitness[:])),
+		CGammaWitness: point(w.cGammaWitness),
+		SHashWitness:  point(w.sHashWitness),
+		ZInv:          hexWord(w.zInv),
+	}
+	proofBytes, err := proof.solidityEncoding()
+	if err != nil {
+		return Vector{}, fmt.Errorf("%s: %w", name, err)
+	}
 
 	return Vector{
 		Name:             name,
 		SecretKey:        hexWord(sk),
-		Nonce:            hexWord(nonce),
+		K:                hexWord(k),
 		HashToCurveTries: n,
 		Hash:             point(h),
-		Proof: Proof{
-			PK:            point(p.PublicKey),
-			Gamma:         point(p.Gamma),
-			C:             hexWord(p.C),
-			S:             hexWord(p.S),
-			Seed:          hexWord(seed),
-			UWitness:      Hex("0x" + hex.EncodeToString(w.uWitness[:])),
-			CGammaWitness: point(w.cGammaWitness),
-			SHashWitness:  point(w.sHashWitness),
-			ZInv:          hexWord(w.zInv),
-		},
-		Output: hexWord(p.Output),
+		Proof:            proof,
+		ProofBytes:       Hex("0x" + hex.EncodeToString(proofBytes)),
+		Output:           hexWord(p.Output),
 	}, nil
+}
+
+// solidityEncoding is abi.encode(VRF.Proof): 13 words (416 bytes) with
+// uWitness left-padded like an address. It is the proof fulfill receives.
+func (p Proof) solidityEncoding() ([]byte, error) {
+	words := []Hex{
+		p.PK[0], p.PK[1], p.Gamma[0], p.Gamma[1], p.C, p.S, p.Seed, p.UWitness,
+		p.CGammaWitness[0], p.CGammaWitness[1], p.SHashWitness[0], p.SHashWitness[1], p.ZInv,
+	}
+	out := make([]byte, 0, 32*len(words))
+	for _, w := range words {
+		b, err := w.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, make([]byte, 32-len(b))...)
+		out = append(out, b...)
+	}
+	return out, nil
 }
 
 // witnesses are the values VRF.sol needs besides the proof itself.
