@@ -116,6 +116,11 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
     address internal payee = makeAddr("payee");
     address internal fulfiller = makeAddr("fulfiller");
 
+    // ERC-7201 slot of "rsk-vrf.storage.VRFCoordinator"; requests is its first member.
+    bytes32 internal constant STORAGE_LOCATION = 0x93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900;
+    // ERC-1967: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1).
+    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
     VRFCoordinator internal coordinator;
     uint256 internal count;
 
@@ -200,5 +205,171 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
                 assertEq(coordinator.deriveRandom(v.requestId, d.context), d.random, v.name);
             }
         }
+    }
+
+    // ------------------------------------------------------------- fulfill
+
+    function test_FulfillIgnoresProofSeed() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        v.proof.seed = uint256(keccak256("not the alpha"));
+        fulfillAs(fulfiller, v);
+        assertEq(coordinator.getRequest(v.requestId).beta, v.beta);
+    }
+
+    function test_FulfillRejectsProofOverDifferentAlpha() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        // A valid proof under the same key, but over another request's Alpha.
+        v.proof = vector(1).proof;
+        vm.expectRevert(bytes("Second mul check failed"));
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillRejectsTamperedProof() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        v.proof.c ^= 1;
+        vm.expectRevert(bytes("addr(c*pk+s*g)!=_uWitness"));
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillRejectsUnknownRequest() public {
+        registerGoldenKey();
+        vm.expectRevert(VRFCoordinator.UnknownRequest.selector);
+        fulfillAs(fulfiller, vector(0));
+    }
+
+    function test_FulfillRejectsRepeatedFulfill() public {
+        requestAll();
+        fulfillAs(fulfiller, vector(0));
+        vm.expectRevert(
+            abi.encodeWithSelector(VRFCoordinator.RequestNotPending.selector, VRFCoordinator.Status.Fulfilled)
+        );
+        fulfillAs(fulfiller, vector(0));
+    }
+
+    function test_FulfillRejectsWrongProvingKey() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        v.proof.pk[1] += 1;
+        vm.expectRevert(VRFCoordinator.WrongProvingKey.selector);
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillRejectsDrandSignatureForAnotherRound() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        v.drandSignature = vector(1).drandSignature;
+        vm.expectRevert(VRFCoordinator.InvalidDrandSignature.selector);
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillRejectsMalformedDrandSignature() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        v.drandSignature[1] += 1;
+        vm.expectRevert(VRFCoordinator.InvalidDrandSignature.selector);
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillRejectsContractCaller() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        vm.prank(fulfiller); // tx.origin stays the default sender
+        vm.expectRevert(VRFCoordinator.FulfillerNotEOA.selector);
+        coordinator.fulfill(v.requestId, v.proof, v.drandSignature);
+    }
+
+    // ------------------------------------------------------------- request
+
+    function test_RequestRequiresAnActiveKey() public {
+        vm.expectRevert(VRFCoordinator.NoActiveKey.selector);
+        requestAs(vector(0));
+    }
+
+    // --------------------------------------------------------------- reads
+
+    function test_DeriveRevertsForUnknownRequest() public {
+        bytes32 requestId = vector(0).requestId;
+        vm.expectRevert(VRFCoordinator.UnknownRequest.selector);
+        coordinator.deriveRandomBytes(requestId, bytes32(0));
+        vm.expectRevert(VRFCoordinator.UnknownRequest.selector);
+        coordinator.deriveRandom(requestId, bytes32(0));
+    }
+
+    function test_DeriveRevertsForPendingRequest() public {
+        requestAll();
+        bytes32 requestId = vector(0).requestId;
+        vm.expectRevert(VRFCoordinator.RequestPending.selector);
+        coordinator.deriveRandomBytes(requestId, bytes32(0));
+        vm.expectRevert(VRFCoordinator.RequestPending.selector);
+        coordinator.deriveRandom(requestId, bytes32(0));
+    }
+
+    function test_DeriveRevertsForRefundedRequest() public {
+        requestAll();
+        bytes32 requestId = vector(0).requestId;
+        // Refunds land in a later slice; set the status byte (bits 160..167) directly.
+        bytes32 slot = keccak256(abi.encode(requestId, STORAGE_LOCATION));
+        uint256 word = uint256(vm.load(address(coordinator), slot));
+        word = (word & ~(uint256(0xff) << 160)) | (uint256(uint8(VRFCoordinator.Status.Refunded)) << 160);
+        vm.store(address(coordinator), slot, bytes32(word));
+        assertEq(uint8(coordinator.getRequest(requestId).status), uint8(VRFCoordinator.Status.Refunded));
+
+        vm.expectRevert(VRFCoordinator.RequestRefunded.selector);
+        coordinator.deriveRandomBytes(requestId, bytes32(0));
+    }
+
+    // --------------------------------------------------------------- admin
+
+    function test_RegisteringAKeyDrainsThePreviousOne() public {
+        registerGoldenKey();
+        // Any other point on the curve: the secp256k1 generator.
+        uint256[2] memory other = [
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+        ];
+        vm.prank(owner);
+        coordinator.registerProvingKey(other, payee);
+        assertEq(coordinator.activeKeyId(), 2);
+        assertEq(uint8(coordinator.getProvingKey(1).state), uint8(VRFCoordinator.KeyState.Draining));
+        assertEq(uint8(coordinator.getProvingKey(2).state), uint8(VRFCoordinator.KeyState.Active));
+    }
+
+    function test_RegisterProvingKeyRejectsDuplicatesAndOffCurvePoints() public {
+        registerGoldenKey();
+        uint256[2] memory pk = vector(0).proof.pk;
+        vm.startPrank(owner);
+        vm.expectRevert(VRFCoordinator.KeyAlreadyRegistered.selector);
+        coordinator.registerProvingKey(pk, payee);
+        pk[1] += 1;
+        vm.expectRevert(VRFCoordinator.InvalidProvingKey.selector);
+        coordinator.registerProvingKey(pk, payee);
+        vm.stopPrank();
+    }
+
+    function test_OnlyOwnerRegistersKeysAndUpgrades() public {
+        address stranger = makeAddr("stranger");
+        uint256[2] memory pk = vector(0).proof.pk;
+        address next = address(new VRFCoordinator());
+
+        vm.startPrank(stranger);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.registerProvingKey(pk, payee);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.upgradeToAndCall(next, "");
+        vm.stopPrank();
+
+        vm.prank(owner);
+        coordinator.upgradeToAndCall(next, "");
+        assertEq(address(uint160(uint256(vm.load(address(coordinator), IMPLEMENTATION_SLOT)))), next);
+    }
+
+    function test_ImplementationCannotBeInitialized() public {
+        VRFCoordinator implementation = new VRFCoordinator();
+        VRFCoordinator.DrandConfig memory drand = coordinator.getDrandConfig(0);
+        vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
+        implementation.initialize(owner, drand);
     }
 }
