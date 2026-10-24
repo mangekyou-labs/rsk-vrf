@@ -1,7 +1,7 @@
 // Where Proving Keys are stored: AWS Secrets Manager, one secret per key.
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
-import type { Hex } from './vrf/prover.ts';
+import type { KeyHash } from './types.ts';
 
 /** SecretSource loads a secret's text by name. */
 export interface SecretSource {
@@ -9,7 +9,7 @@ export interface SecretSource {
 }
 
 /** secretName is where the Proving Key with this keyHash is stored. */
-export function secretName(keyHash: Hex): string {
+export function secretName(keyHash: KeyHash): string {
   return `rsk-vrf/proving-key/${keyHash}`;
 }
 

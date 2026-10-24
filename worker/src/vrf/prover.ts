@@ -8,21 +8,19 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { concatBytes } from '@noble/hashes/utils.js';
 
-import { toBigInt, word } from './bytes.ts';
+import type { Hex, KeyHash } from '../types.ts';
+import { bytesToHex, toBigInt, word } from './bytes.ts';
+import { N, P } from './curve.ts';
 import { nonce } from './nonce.ts';
 
 const { Point } = secp256k1;
 type Point = typeof Point.BASE;
-
-const P = Point.Fp.ORDER;
-const N = Point.Fn.ORDER;
 
 // Domain-separation prefixes, as in VRF.sol.
 const HASH_TO_CURVE_PREFIX = word(1n);
 const SCALAR_FROM_CURVE_POINTS_PREFIX = word(2n);
 const VRF_RANDOM_OUTPUT_PREFIX = word(3n);
 
-export type Hex = `0x${string}`;
 export type Pair = readonly [bigint, bigint];
 
 /** Proof is VRF.sol's Proof struct, field for field. */
@@ -131,7 +129,7 @@ export function prove(secret: bigint, alpha: bigint): Proven {
         c,
         s,
         seed: alpha,
-        uWitness: `0x${Buffer.from(uWitness).toString('hex')}`,
+        uWitness: bytesToHex(uWitness),
         cGammaWitness: affine(cGamma),
         sHashWitness: affine(sHash),
         zInv: Point.Fp.inv(projectiveECAddZ(cGamma, sHash)),
@@ -142,8 +140,8 @@ export function prove(secret: bigint, alpha: bigint): Proven {
 }
 
 /** keyHashOf is keccak256(abi.encode(uint256[2] pk)), the key's id on-chain. */
-export function keyHashOf(pk: Point): Hex {
-  return `0x${Buffer.from(keccak(pointBytes(pk))).toString('hex')}`;
+export function keyHashOf(pk: Point): KeyHash {
+  return bytesToHex(keccak(pointBytes(pk))) as KeyHash;
 }
 
 /** encodeProof is abi.encode(VRF.Proof): the 416 bytes fulfill takes. */

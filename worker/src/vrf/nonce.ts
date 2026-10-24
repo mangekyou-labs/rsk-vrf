@@ -12,8 +12,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes } from '@noble/hashes/utils.js';
 
 import { toBigInt, word } from './bytes.ts';
-
-const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+import { N } from './curve.ts';
 
 /**
  * nonce returns the candidate-th valid k (counting from 0) of the RFC 6979

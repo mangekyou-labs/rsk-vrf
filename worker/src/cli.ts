@@ -8,7 +8,8 @@
 // to print to a terminal.
 import { ProvingKey } from './proving-key.ts';
 import { type SecretSource, secretName } from './secrets.ts';
-import type { Hex } from './vrf/prover.ts';
+import { type KeyHash, parseKeyHash } from './types.ts';
+import { hexWord } from './vrf/bytes.ts';
 
 export interface CliDeps {
   stdout(text: string): void;
@@ -19,9 +20,6 @@ export interface CliDeps {
 }
 
 const USAGE = 'usage: worker keygen | worker check-key <keyHash>\n';
-const KEY_HASH = /^0x[0-9a-fA-F]{64}$/;
-
-const word = (n: bigint) => '0x' + n.toString(16).padStart(64, '0');
 
 /** runCli runs one subcommand and returns its exit code. */
 export async function runCli(argv: readonly string[], deps: CliDeps): Promise<number> {
@@ -30,9 +28,11 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
     case 'keygen':
       if (args.length !== 0) return usage(deps);
       return keygen(deps);
-    case 'check-key':
-      if (args.length !== 1 || !KEY_HASH.test(args[0]!)) return usage(deps);
-      return checkKey(args[0]!.toLowerCase() as Hex, deps);
+    case 'check-key': {
+      const keyHash = args.length === 1 ? parseKeyHash(args[0]!) : undefined;
+      if (keyHash === undefined) return usage(deps);
+      return checkKey(keyHash, deps);
+    }
     default:
       return usage(deps);
   }
@@ -49,13 +49,13 @@ function keygen(deps: CliDeps): number {
     return 1;
   }
   const key = ProvingKey.generate();
-  const [x, y] = key.publicKey.map(word);
+  const [x, y] = key.publicKey.map(hexWord);
   deps.stderr(`publicKey: [${x}, ${y}]\nkeyHash: ${key.keyHash}\n`);
   deps.stdout(`${key.revealSecretHex()}\n`);
   return 0;
 }
 
-async function checkKey(keyHash: Hex, deps: CliDeps): Promise<number> {
+async function checkKey(keyHash: KeyHash, deps: CliDeps): Promise<number> {
   const name = secretName(keyHash);
   let key: ProvingKey;
   try {
