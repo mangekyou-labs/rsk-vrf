@@ -80,13 +80,22 @@ function ethAddress(p: Point): Uint8Array {
   return keccak(pointBytes(p)).slice(12);
 }
 
-/** projectiveECAddZ is the z denominator VRF.sol's projectiveECAdd computes for p + q. */
-function projectiveECAddZ(p: Point, q: Point): bigint {
+/**
+ * projectiveECAddZ is the z denominator VRF.sol's _projectiveECAdd computes
+ * for p + q, whose inverse is the proof's zInv.
+ */
+export function projectiveECAddZ(p: Point, q: Point): bigint {
   const [px] = affine(p);
   const [qx] = affine(q);
   const lz = mod(qx - px, P);
   const dx = mod(lz * lz, P);
   const dy = mod(dx * lz, P);
+  // This follows VRF.sol: z = dx when dx == dy, else dx·dy. It does not follow
+  // Go's ProjectiveECAdd (used by SolidityPrecalculations), whose `dx != dy`
+  // compares *big.Int pointers and so always gives dx·dy. VRF.sol is the
+  // reference because zInv is valid only if it inverts the z the contract
+  // computes. The two agree on every input: dx == dy only when lz is 0 or 1,
+  // and then dx is 0 or 1, so dx·dy == dx.
   return dx !== dy ? mod(dx * dy, P) : dx;
 }
 
