@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-pins:
+    name: Vendored file pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the pin check
+        run: contracts/script/test-vendor-pins.sh
+      - name: Check vendored files against their pins and upstream
+        run: contracts/script/check-vendor-pins.sh --upstream
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - name: Format
+        run: forge fmt --check
+      - name: Build
+        run: forge build --sizes
+      - name: Test
+        run: forge test -vvv
+
+  vrf-vectors:
+    name: VRF proof vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/vrf-vectors-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/vrf-vectors-go/go.mod
+          cache-dependency-path: tools/vrf-vectors-go/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Regenerate and fail on any diff
+        run: |
+          go run .
+          git diff --exit-code -- vrf-proofs.json
