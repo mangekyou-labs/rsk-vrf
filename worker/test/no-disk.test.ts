@@ -9,9 +9,8 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { ProvingKey } from '../src/proving-key.ts';
+import { KEY_HASH, SECRET_HEX } from './keys.ts';
 import { assertNoSecret } from './secret.ts';
-import { vectors } from './vectors.ts';
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const TRAP = here('./fixtures/trap-disk-writes.ts');
@@ -54,12 +53,10 @@ describe('the Proving Key never reaches disk', () => {
   });
 
   it('check-key writes nothing to disk and prints no secret', () => {
-    const secretHex = vectors[0]!.secretKey;
-    const keyHash = ProvingKey.fromHex(secretHex).keyHash;
-    const r = runTrapped(CHECK_KEY, ['check-key', keyHash], { TEST_PROVING_KEY: secretHex });
+    const r = runTrapped(CHECK_KEY, ['check-key', KEY_HASH], { TEST_PROVING_KEY: SECRET_HEX });
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!r.stderr.includes(MARK), r.stderr);
     assert.deepEqual(r.written, []);
-    assertNoSecret(r.stdout + r.stderr, secretHex, 'output');
+    assertNoSecret(r.stdout + r.stderr, SECRET_HEX, 'output');
   });
 });

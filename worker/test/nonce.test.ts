@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 
+import { N } from '../src/vrf/curve.ts';
 import { nonce } from '../src/vrf/nonce.ts';
 import { vectors } from './vectors.ts';
-
-const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
 const sha256 = (msg: string) => BigInt('0x' + createHash('sha256').update(msg).digest('hex'));
 

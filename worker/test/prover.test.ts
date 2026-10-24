@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { ProvingKey } from '../src/proving-key.ts';
+import { bytesToHex } from '../src/vrf/bytes.ts';
 import { encodeProof } from '../src/vrf/prover.ts';
+import { SECRET_HEX } from './keys.ts';
 import { vectors } from './vectors.ts';
-
-const hex = (bytes: Uint8Array) => '0x' + Buffer.from(bytes).toString('hex');
 const pair = (xy: readonly [`0x${string}`, `0x${string}`]) => [BigInt(xy[0]), BigInt(xy[1])];
 
 describe('ProvingKey.prove', () => {
@@ -23,18 +23,18 @@ describe('ProvingKey.prove', () => {
       assert.deepEqual([...proof.cGammaWitness], pair(v.proof.cGammaWitness), 'cGammaWitness');
       assert.deepEqual([...proof.sHashWitness], pair(v.proof.sHashWitness), 'sHashWitness');
       assert.equal(proof.zInv, BigInt(v.proof.zInv), 'zInv');
-      assert.equal(hex(encodeProof(proof)), v.proofBytes, 'proofBytes');
+      assert.equal(bytesToHex(encodeProof(proof)), v.proofBytes, 'proofBytes');
       assert.equal(beta, BigInt(v.output), 'Beta');
     });
   }
 
   it('is deterministic', () => {
-    const key = ProvingKey.fromHex(vectors[0]!.secretKey);
+    const key = ProvingKey.fromHex(SECRET_HEX);
     assert.deepEqual(key.prove(42n), key.prove(42n));
   });
 
   it('rejects an Alpha that is not a 256-bit word', () => {
-    const key = ProvingKey.fromHex(vectors[0]!.secretKey);
+    const key = ProvingKey.fromHex(SECRET_HEX);
     assert.throws(() => key.prove(-1n), RangeError);
     assert.throws(() => key.prove(1n << 256n), RangeError);
   });

@@ -4,12 +4,9 @@ import { describe, it } from 'node:test';
 import { type CliDeps, runCli } from '../src/cli.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 import { type SecretSource, secretName } from '../src/secrets.ts';
+import { hexWord } from '../src/vrf/bytes.ts';
+import { KEY_HASH, OTHER_SECRET_HEX, SECRET_HEX } from './keys.ts';
 import { assertNoSecret } from './secret.ts';
-import { vectors } from './vectors.ts';
-
-const secretHex = vectors[0]!.secretKey;
-const otherSecretHex = vectors.find((v) => v.secretKey !== secretHex)!.secretKey;
-const keyHash = ProvingKey.fromHex(secretHex).keyHash;
 
 class FakeSecrets implements SecretSource {
   readonly loaded: string[] = [];
@@ -45,7 +42,7 @@ describe('worker keygen', () => {
     assert.match(stdout, /^0x[0-9a-f]{64}\n$/);
     const key = ProvingKey.fromHex(stdout);
     assert.ok(stderr.includes(`keyHash: ${key.keyHash}`), stderr);
-    const [x, y] = key.publicKey.map((n) => '0x' + n.toString(16).padStart(64, '0'));
+    const [x, y] = key.publicKey.map(hexWord);
     assert.ok(stderr.includes(`publicKey: [${x}, ${y}]`), stderr);
     assertNoSecret(stderr, stdout.trim(), 'stderr');
   });
@@ -72,46 +69,46 @@ describe('worker keygen', () => {
 
 describe('worker check-key', () => {
   it('loads the secret for keyHash from rsk-vrf/proving-key/<keyHash> and confirms it', async () => {
-    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${keyHash}`]: `${secretHex}\n` });
-    const { code, stdout, stderr } = await run(['check-key', keyHash], { secrets });
+    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${KEY_HASH}`]: `${SECRET_HEX}\n` });
+    const { code, stdout, stderr } = await run(['check-key', KEY_HASH], { secrets });
     assert.equal(code, 0, stderr);
-    assert.deepEqual(secrets.loaded, [secretName(keyHash)]);
-    assert.equal(secretName(keyHash), `rsk-vrf/proving-key/${keyHash}`);
-    assert.ok(stdout.includes(keyHash));
-    assertNoSecret(stdout + stderr, secretHex, 'output');
+    assert.deepEqual(secrets.loaded, [secretName(KEY_HASH)]);
+    assert.equal(secretName(KEY_HASH), `rsk-vrf/proving-key/${KEY_HASH}`);
+    assert.ok(stdout.includes(KEY_HASH));
+    assertNoSecret(stdout + stderr, SECRET_HEX, 'output');
   });
 
   it('accepts an upper-case keyHash', async () => {
-    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${keyHash}`]: secretHex });
-    const { code } = await run(['check-key', '0x' + keyHash.slice(2).toUpperCase()], { secrets });
+    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${KEY_HASH}`]: SECRET_HEX });
+    const { code } = await run(['check-key', '0x' + KEY_HASH.slice(2).toUpperCase()], { secrets });
     assert.equal(code, 0);
   });
 
   it('fails when the secret is for another key, without printing either secret', async () => {
-    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${keyHash}`]: otherSecretHex });
-    const { code, stdout, stderr } = await run(['check-key', keyHash], { secrets });
+    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${KEY_HASH}`]: OTHER_SECRET_HEX });
+    const { code, stdout, stderr } = await run(['check-key', KEY_HASH], { secrets });
     assert.equal(code, 1);
-    assert.ok(stderr.includes(ProvingKey.fromHex(otherSecretHex).keyHash), stderr);
-    assertNoSecret(stdout + stderr, otherSecretHex, 'output');
+    assert.ok(stderr.includes(ProvingKey.fromHex(OTHER_SECRET_HEX).keyHash), stderr);
+    assertNoSecret(stdout + stderr, OTHER_SECRET_HEX, 'output');
   });
 
   it('fails when the secret is malformed, without printing it', async () => {
-    const malformed = secretHex.slice(0, -1) + 'z';
-    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${keyHash}`]: malformed });
-    const { code, stdout, stderr } = await run(['check-key', keyHash], { secrets });
+    const malformed = SECRET_HEX.slice(0, -1) + 'z';
+    const secrets = new FakeSecrets({ [`rsk-vrf/proving-key/${KEY_HASH}`]: malformed });
+    const { code, stdout, stderr } = await run(['check-key', KEY_HASH], { secrets });
     assert.equal(code, 1);
     assert.ok(!(stdout + stderr).includes(malformed.slice(2, 20)), stderr);
   });
 
   it('fails when the secret is missing', async () => {
-    const { code, stderr } = await run(['check-key', keyHash], { secrets: new FakeSecrets({}) });
+    const { code, stderr } = await run(['check-key', KEY_HASH], { secrets: new FakeSecrets({}) });
     assert.equal(code, 1);
     assert.match(stderr, /not found/);
   });
 
   it('rejects a malformed keyHash before loading anything', async () => {
     const secrets = new FakeSecrets({});
-    for (const argv of [['check-key'], ['check-key', 'abc'], ['check-key', keyHash, keyHash]]) {
+    for (const argv of [['check-key'], ['check-key', 'abc'], ['check-key', KEY_HASH, KEY_HASH]]) {
       const { code } = await run(argv, { secrets });
       assert.equal(code, 2, argv.join(' '));
     }
