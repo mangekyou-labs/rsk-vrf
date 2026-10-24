@@ -3,6 +3,7 @@ module github.com/mangekyou-labs/rsk-vrf/tools/vrf-vectors-go
 go 1.26.2
 
 require (
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/ethereum/go-ethereum v1.17.0
 	github.com/smartcontractkit/chainlink-common/keystore v1.3.0
 	go.dedis.ch/kyber/v3 v3.1.0
@@ -22,7 +23,6 @@ require (
 	github.com/consensys/gnark-crypto v0.18.1 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.5 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.9 // indirect

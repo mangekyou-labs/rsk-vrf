@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"math/big"
 	"os"
 	"testing"
@@ -45,6 +46,36 @@ func TestEveryVectorVerifiesUnderVRFKey(t *testing.T) {
 		ok, err := p.VerifyVRFProof()
 		if err != nil || !ok {
 			t.Errorf("%s: vrfkey rejects the vector (ok=%v, err=%v)", v.Name, ok, err)
+		}
+	}
+}
+
+// Known secp256k1 / HMAC-SHA256 RFC 6979 nonces (the widely used Bitcoin
+// library vectors), where h1 = SHA-256(message) and h1 < n.
+func TestKIsRFC6979OverSecretKeyAndSeed(t *testing.T) {
+	n := secp256k1.GroupOrder
+	cases := []struct {
+		sk  *big.Int
+		msg string
+		k   string
+	}{
+		{big.NewInt(1), "Satoshi Nakamoto", "8f8a276c19f4149656b280621e358cce24f5f52542772691ee69063b74f15d15"},
+		{big.NewInt(1), "All those moments will be lost in time, like tears in rain. Time to die...", "38aa22d72376b4dbc472e06c3ba403ee0a394da63fc58d88686c611aba98d6b3"},
+		{new(big.Int).Sub(n, big.NewInt(1)), "Satoshi Nakamoto", "33a19b60e25fb6f4435af53a3d42d493644827367e6453928554f43e49aa6f90"},
+	}
+	for _, c := range cases {
+		h := sha256.Sum256([]byte(c.msg))
+		got := rfc6979K(c.sk, new(big.Int).SetBytes(h[:]), 0)
+		if want := toInt(Hex("0x" + c.k)); got.Cmp(want) != 0 {
+			t.Errorf("sk=%x %q: k = %x, want %x", c.sk, c.msg, got, want)
+		}
+	}
+}
+
+func TestEveryVectorUsesTheRFC6979K(t *testing.T) {
+	for _, v := range mustGenerate(t).Vectors {
+		if got, want := toInt(v.K), rfc6979K(toInt(v.SecretKey), toInt(v.Proof.Seed), 0); got.Cmp(want) != 0 {
+			t.Errorf("%s: k = %x, want the first RFC 6979 candidate %x", v.Name, got, want)
 		}
 	}
 }
