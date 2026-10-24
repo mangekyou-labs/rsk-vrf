@@ -56,4 +56,4 @@ jobs:
       - name: Regenerate and fail on any diff
         run: |
           go run .
-          git diff --exit-code -- vrf-proofs.json
+          git diff --exit-code -- vrf-proofs.json coordinator-vectors.json
