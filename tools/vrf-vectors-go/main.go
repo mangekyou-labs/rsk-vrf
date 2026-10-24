@@ -2,9 +2,19 @@
 // contracts and the worker test against.
 //
 // Proofs come from Chainlink's own Go implementation (vrfkey), so a match in
-// VRF.sol shows that the vendored verifier and the off-chain prover agree. The
-// witnesses VRF.sol needs (uWitness, cGammaWitness, sHashWitness, zInv) are
-// computed the same way as Chainlink core's SolidityPrecalculations.
+// VRF.sol shows that the vendored verifier and the off-chain prover agree.
+//
+// The witnesses VRF.sol needs (uWitness, cGammaWitness, sHashWitness, zInv)
+// come from solidityWitnesses, our port of SolidityPrecalculations in
+// smartcontractkit/chainlink@2a9203ab5bf52406442a68c4307e69fe04b138ba
+// core/services/vrf/proof/solidity_proof.go. That function isn't in the
+// vrfkey module, and importing chainlink core for it would pull in the whole
+// node. The cross-check for the port is VRF.sol itself: the contract tests
+// accept every vector's witnesses.
+//
+// "Seed" here is VRF.sol's raw `seed` input, the 256-bit message the proof is
+// over. It is not a domain Alpha (see GLOSSARY.md); these vectors pick the
+// seed directly.
 //
 // Everything is derived from fixed labels, so the output is deterministic and
 // CI can regenerate it and fail on any diff. These keys are public test keys.
@@ -14,7 +24,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"math/big"
@@ -30,8 +39,8 @@ import (
 const (
 	// maxTries is the largest hash-to-curve try count we need a vector for.
 	maxTries = 5
-	// keys is how many secret keys the vectors use.
-	keys = 3
+	// numKeys is how many secret keys the vectors use.
+	numKeys = 3
 	// defaultOut is the committed vector file, relative to this directory.
 	defaultOut = "vrf-proofs.json"
 )
@@ -83,7 +92,7 @@ type Proof struct {
 	ZInv          Hex    `json:"zInv"`
 }
 
-func label(parts ...[]byte) *big.Int {
+func keccakInt(parts ...[]byte) *big.Int {
 	return new(big.Int).SetBytes(crypto.Keccak256(parts...))
 }
 
@@ -93,7 +102,7 @@ func be32(n *big.Int) []byte {
 }
 
 func secretKey(k int) *big.Int {
-	sk := label([]byte("rsk-vrf/vrf-vectors/secret-key"), be32(big.NewInt(int64(k))))
+	sk := keccakInt([]byte("rsk-vrf/vrf-vectors/secret-key"), be32(big.NewInt(int64(k))))
 	return sk.Mod(sk, secp256k1.GroupOrder)
 }
 
@@ -112,7 +121,7 @@ func tries(pk kyber.Point, seed *big.Int) (int, kyber.Point, error) {
 // hash-to-curve needs exactly want tries.
 func seedNeeding(pk kyber.Point, want int) (*big.Int, error) {
 	for i := int64(0); i < 1<<20; i++ {
-		seed := label([]byte("rsk-vrf/vrf-vectors/seed"), be32(big.NewInt(i)))
+		seed := keccakInt([]byte("rsk-vrf/vrf-vectors/seed"), be32(big.NewInt(i)))
 		n, _, err := tries(pk, seed)
 		if err != nil {
 			return nil, err
@@ -126,14 +135,14 @@ func seedNeeding(pk kyber.Point, want int) (*big.Int, error) {
 
 func prove(name string, sk, seed *big.Int) (Vector, error) {
 	key := vrfkey.MustNewV2XXXTestingOnly(sk)
-	nonce := label([]byte("rsk-vrf/vrf-vectors/nonce"), be32(sk), be32(seed))
+	nonce := keccakInt([]byte("rsk-vrf/vrf-vectors/nonce"), be32(sk), be32(seed))
 	nonce.Mod(nonce, secp256k1.GroupOrder)
 	var p vrfkey.Proof
 	for {
 		var err error
 		p, err = key.GenerateProofWithNonce(seed, nonce)
 		if errors.Is(err, vrfkey.ErrCGammaEqualsSHash) {
-			nonce = label(be32(nonce))
+			nonce = keccakInt(be32(nonce))
 			nonce.Mod(nonce, secp256k1.GroupOrder)
 			continue
 		}
@@ -148,16 +157,7 @@ func prove(name string, sk, seed *big.Int) (Vector, error) {
 		return Vector{}, fmt.Errorf("%s: %w", name, err)
 	}
 
-	// Chainlink core's SolidityPrecalculations.
-	newPoint := vrfkey.Secp256k1Curve.Point
-	c := secp256k1.IntToScalar(p.C)
-	s := secp256k1.IntToScalar(p.S)
-	u := newPoint().Add(newPoint().Mul(c, p.PublicKey), newPoint().Mul(s, vrfkey.Generator))
-	uWitness := secp256k1.EthereumAddress(u)
-	cGammaWitness := newPoint().Mul(c, p.Gamma)
-	sHashWitness := newPoint().Mul(s, h)
-	_, _, z := vrfkey.ProjectiveECAdd(cGammaWitness, sHashWitness)
-	zInv := new(big.Int).ModInverse(z, vrfkey.FieldSize)
+	w := solidityWitnesses(p, h)
 
 	return Vector{
 		Name:             name,
@@ -171,13 +171,38 @@ func prove(name string, sk, seed *big.Int) (Vector, error) {
 			C:             hexWord(p.C),
 			S:             hexWord(p.S),
 			Seed:          hexWord(seed),
-			UWitness:      Hex("0x" + hex.EncodeToString(uWitness[:])),
-			CGammaWitness: point(cGammaWitness),
-			SHashWitness:  point(sHashWitness),
-			ZInv:          hexWord(zInv),
+			UWitness:      Hex("0x" + hex.EncodeToString(w.uWitness[:])),
+			CGammaWitness: point(w.cGammaWitness),
+			SHashWitness:  point(w.sHashWitness),
+			ZInv:          hexWord(w.zInv),
 		},
 		Output: hexWord(p.Output),
 	}, nil
+}
+
+// witnesses are the values VRF.sol needs besides the proof itself.
+type witnesses struct {
+	uWitness                    [20]byte
+	cGammaWitness, sHashWitness kyber.Point
+	zInv                        *big.Int
+}
+
+// solidityWitnesses is a port of Chainlink core's SolidityPrecalculations (see
+// the package comment). h is the hash-to-curve point of p's key and seed.
+func solidityWitnesses(p vrfkey.Proof, h kyber.Point) witnesses {
+	newPoint := vrfkey.Secp256k1Curve.Point
+	c := secp256k1.IntToScalar(p.C)
+	s := secp256k1.IntToScalar(p.S)
+	u := newPoint().Add(newPoint().Mul(c, p.PublicKey), newPoint().Mul(s, vrfkey.Generator))
+	cGamma := newPoint().Mul(c, p.Gamma)
+	sHash := newPoint().Mul(s, h)
+	_, _, z := vrfkey.ProjectiveECAdd(cGamma, sHash)
+	return witnesses{
+		uWitness:      secp256k1.EthereumAddress(u),
+		cGammaWitness: cGamma,
+		sHashWitness:  sHash,
+		zInv:          new(big.Int).ModInverse(z, vrfkey.FieldSize),
+	}
 }
 
 // Generate builds the full vector set.
@@ -215,7 +240,7 @@ func Generate() (File, error) {
 			return File{}, err
 		}
 	}
-	for k := 1; k < keys; k++ {
+	for k := 1; k < numKeys; k++ {
 		sk := secretKey(k)
 		for want := 1; want <= 2; want++ {
 			seed, err := seedNeeding(publicKey(sk), want)
@@ -239,8 +264,6 @@ func render(f File) ([]byte, error) {
 }
 
 func main() {
-	out := flag.String("out", defaultOut, "where to write the vector file")
-	flag.Parse()
 	file, err := Generate()
 	if err != nil {
 		log.Fatal(err)
@@ -249,8 +272,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := os.WriteFile(*out, b, 0o644); err != nil {
+	if err := os.WriteFile(defaultOut, b, 0o644); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("wrote %d vectors to %s\n", len(file.Vectors), *out)
+	fmt.Printf("wrote %d vectors to %s\n", len(file.Vectors), defaultOut)
 }
