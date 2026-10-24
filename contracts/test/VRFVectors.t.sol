@@ -23,6 +23,8 @@ abstract contract VRFVectorFixture is Test {
 
     function setUp() public virtual {
         vrf = new VRFHarness();
+        // Reads only the vector file, which foundry.toml's fs_permissions allows.
+        // forge-lint: disable-next-line(unsafe-cheatcode)
         json = vm.readFile(VECTORS);
     }
 
