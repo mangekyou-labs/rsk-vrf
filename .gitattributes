@@ -1,0 +1,2 @@
+# Vendored files are pinned by git blob hash; never normalise them.
+contracts/src/vendor/** -text
