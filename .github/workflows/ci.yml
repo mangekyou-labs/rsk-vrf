@@ -38,3 +38,22 @@ jobs:
         run: forge build --sizes
       - name: Test
         run: forge test -vvv
+
+  vrf-vectors:
+    name: VRF proof vectors
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/vrf-vectors-go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/vrf-vectors-go/go.mod
+          cache-dependency-path: tools/vrf-vectors-go/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Regenerate and fail on any diff
+        run: |
+          go run .
+          git diff --exit-code -- vrf-proofs.json
