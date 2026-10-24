@@ -8,6 +8,7 @@ import (
 
 	"github.com/smartcontractkit/chainlink-common/keystore/corekeys/vrfkey"
 	"github.com/smartcontractkit/chainlink-common/keystore/corekeys/vrfkey/secp256k1"
+	"go.dedis.ch/kyber/v3"
 )
 
 func TestVectorsCoverMultiTryHashToCurve(t *testing.T) {
@@ -25,11 +26,11 @@ func TestVectorsCoverMultiTryHashToCurve(t *testing.T) {
 
 func TestEveryVectorVerifiesUnderVRFKey(t *testing.T) {
 	for _, v := range mustGenerate(t).Vectors {
-		pk, err := secp256k1.LongUnmarshal(append(word(v.Proof.PK[0]), word(v.Proof.PK[1])...))
+		pk, err := toPoint(v.Proof.PK)
 		if err != nil {
 			t.Fatalf("%s: pk: %v", v.Name, err)
 		}
-		gamma, err := secp256k1.LongUnmarshal(append(word(v.Proof.Gamma[0]), word(v.Proof.Gamma[1])...))
+		gamma, err := toPoint(v.Proof.Gamma)
 		if err != nil {
 			t.Fatalf("%s: gamma: %v", v.Name, err)
 		}
@@ -69,6 +70,11 @@ func mustGenerate(t *testing.T) File {
 		t.Fatal(err)
 	}
 	return file
+}
+
+// toPoint decodes an (x, y) coordinate pair.
+func toPoint(xy [2]Hex) (kyber.Point, error) {
+	return secp256k1.LongUnmarshal(append(word(xy[0]), word(xy[1])...))
 }
 
 func toInt(h Hex) *big.Int {

@@ -18,4 +18,4 @@ These files are copied byte for byte from upstream and must never be edited. [`P
 
 ## Updating a pin
 
-Copy the new upstream file unmodified, then set its line in `PINS` to the new commit and the output of `git hash-object <file>`. Run `script/check-vendor-pins.sh --upstream` to confirm the pin matches GitHub.
+Copy the new upstream file unmodified, then set its line in `PINS` to the new commit and the output of `git hash-object <file>`. Make the same change to the pins hard-coded in `check-vendor-pins.sh`, so a pin can't move through a `PINS` edit alone. Every file under `src/vendor/` other than this README and `PINS` must be pinned. Run `script/check-vendor-pins.sh --upstream` to confirm the pin matches GitHub.

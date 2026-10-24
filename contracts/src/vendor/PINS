@@ -1,5 +1,6 @@
 # Upstream git blob hashes of the vendored files. CI fails if a local file's
 # `git hash-object` differs from its pin, and checks each pin against upstream.
+# check-vendor-pins.sh also hard-codes these pins; change both together.
 # blob                                     upstream-repo@commit                                                path-in-upstream                   path-under-contracts/
 0aa7ffeb87a5c9d72657aa992639d54a2c9bc3b8 smartcontractkit/chainlink-evm@23aa97639f630240f34b79b98d6b38baa094ccc5 contracts/src/v0.8/vrf/VRF.sol src/vendor/chainlink/VRF.sol
 07d4ec712ee5a0d256a99ebad6f3157c84436edb smartcontractkit/chainlink-evm@23aa97639f630240f34b79b98d6b38baa094ccc5 LICENSE src/vendor/chainlink/LICENSE
