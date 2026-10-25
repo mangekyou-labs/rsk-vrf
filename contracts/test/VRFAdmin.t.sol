@@ -352,7 +352,7 @@ contract VRFAdminTest is CoordinatorVectorFixture {
         assertEq(coordinator.fee(), 2e13);
     }
 
-    function test_MaxCallbackCapIsFullyForwardedAtMinimumSuccessfulFulfillGas() public {
+    function test_MaxCallbackCapIsFullyForwardedWithAmpleFulfillGas() public {
         RequestVector memory v = vector(0);
         vm.etch(v.requester, address(new RecordingRequester()).code);
         vm.startPrank(owner);
@@ -363,19 +363,12 @@ contract VRFAdminTest is CoordinatorVectorFixture {
         vm.prank(v.requester);
         coordinator.requestWithCallback(v.tag);
         vm.roll(block.number + 12);
-        bytes memory data = abi.encodeCall(VRFCoordinator.fulfill, (v.requestId, v.proof, v.drandSignature));
-        // Find the first accepted gas limit. Reverted attempts leave the request
-        // pending; acceptance must deliver the full frozen cap, even near EIP-150's limit.
-        for (uint256 limit = 2_500_000; limit <= 3_500_000; limit += 5_000) {
-            vm.prank(stranger, stranger);
-            (bool success,) = address(coordinator).call{gas: limit}(data);
-            if (success) {
-                assertEq(RecordingRequester(v.requester).beta(), v.beta);
-                assertGt(RecordingRequester(v.requester).entryGas(), 2_499_000);
-                assertLe(RecordingRequester(v.requester).entryGas(), 2_500_000);
-                return;
-            }
-        }
-        fail("no successful fulfillment within gas search range");
+        // Foundry applies EIP-150, unlike Rootstock. The rskj integration suite
+        // checks full-cap forwarding at the minimum accepted transaction gas.
+        vm.prank(stranger, stranger);
+        coordinator.fulfill{gas: 4_000_000}(v.requestId, v.proof, v.drandSignature);
+        assertEq(RecordingRequester(v.requester).beta(), v.beta);
+        assertGt(RecordingRequester(v.requester).entryGas(), 2_499_000);
+        assertLe(RecordingRequester(v.requester).entryGas(), 2_500_000);
     }
 }
