@@ -43,6 +43,10 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          if ! git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            echo "::error::Storage layout baseline commit is unavailable: $BASE_SHA"
+            exit 1
+          fi
           if git cat-file -e "$BASE_SHA:contracts/storage-layout/VRFCoordinator.json" 2>/dev/null; then
             python3 script/check-upgrade-safety.py --base-ref "$BASE_SHA"
           else

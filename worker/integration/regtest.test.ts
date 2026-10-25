@@ -124,7 +124,7 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
     const nextAddress = nextReceipt.contractAddress!;
     const implementationSlot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
     const originalImplementation = await client.getStorageAt({ address: coordinator, slot: implementationSlot });
-    await assert.rejects(client.simulateContract({ address: coordinator, abi: implementation.abi, functionName: 'upgradeToAndCall', args: [nextAddress, '0x'], account: requester, gas: 500_000n }), /OwnableUnauthorizedAccount/, 'the pending Admin cannot upgrade before accepting ownership');
+    await assert.rejects(client.simulateContract({ address: coordinator, abi: implementation.abi, functionName: 'upgradeToAndCall', args: [nextAddress, '0x'], account: requester, gas: 500_000n }), /transaction reverted/i, 'the pending Admin cannot upgrade before accepting ownership (rskj does not return custom error data)');
     const rejectedHash = await requesterWallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'upgradeToAndCall', args: [nextAddress, '0x'], gas: 500_000n, gasPrice: 1n });
     await mine();
     assert.equal((await client.waitForTransactionReceipt({ hash: rejectedHash })).status, 'reverted', 'non-Admin upgrade is rejected in a mined transaction');

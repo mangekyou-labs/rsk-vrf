@@ -22,3 +22,14 @@ python3 contracts/script/check-upgrade-safety.py --write-snapshot
 Regeneration first checks compatibility with the existing snapshot. CI also compares the compiled layout with the base revision's snapshot, so committing an incompatible regenerated snapshot cannot bypass the gate. The initial adoption PR bootstraps this check because its base predates the snapshot. Subsequent PRs remain checked against the existing base snapshot, including when a PR deletes or replaces its own snapshot.
 
 The integration gate tests compile source mutations that change the coordinator's namespace location, mapped Request packing, and drand array element packing. Each must fail against the committed snapshot. They restore the source after each run.
+
+When upgrading a pre-admin tracer proxy, the owner must initialize the appended parameters atomically:
+
+```solidity
+coordinator.upgradeToAndCall(
+    newImplementation,
+    abi.encodeCall(VRFCoordinator.initializeAdminParameters, ())
+);
+```
+
+This migration preserves the existing round offset, ownership, keys, drand configs, nonces and request records. It sets the new global defaults to fee `2e13`, callback gas cap `200000`, timeout `1200` blocks and confirmations `12`. Existing requests retain their frozen values. The migration can run once and rejects newly initialized proxies; later upgrades must use their own migration data, or empty data when no migration is needed.

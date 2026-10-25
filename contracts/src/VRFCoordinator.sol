@@ -12,7 +12,7 @@ import {VRFDerivation} from "./VRFDerivation.sol";
 /// @notice Requesters ask for randomness bound to the Active Proving Key and a future
 ///   drand round; any Fulfiller EOA submits the drand signature and a VRF proof over
 ///   Alpha; anyone reads Beta and derived values afterwards.
-/// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage. This is
+/// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage.
 ///   Admin parameters are frozen per request. Fee settlement, refunds and key
 ///   revocation are implemented in subsequent lifecycle slices.
 contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
