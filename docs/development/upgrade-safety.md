@@ -11,7 +11,7 @@ The gate compiles the coordinator and checks its deployed runtime against the 24
 
 The committed snapshot is `contracts/storage-layout/VRFCoordinator.json`. ERC-7201 structs do not appear in the coordinator's ordinary Solidity storage layout. The extractor instead discovers namespaced structs in its inheritance tree and compiles a temporary contract containing those structs. Solidity supplies member slots, offsets, widths, and nested mapping/array layouts. The snapshot also records enum variants and the actual namespace locations used by storage accessors, including inherited OpenZeppelin storage. Unsupported accessor expressions fail the gate for explicit review.
 
-Existing namespaces and fields must retain their locations, order, types and enum variant order. Appending fields to a namespace or a mapping value is allowed; changing the element size of an array is rejected. New namespaces are allowed. Ordinary, non-namespaced coordinator storage is rejected. These checks protect layout compatibility; upgrade authorization and retained request behavior are tested separately through the proxy.
+Existing namespaces and fields must retain their locations, order, types and enum variant order. Appending fields to a namespace or a mapping value is allowed; changing the element size of an array is rejected. New namespaces are allowed, provided their actual accessor locations and occupied root storage ranges do not overlap another namespace. Ranges that exceed the uint256 slot address space are rejected. Ordinary, non-namespaced coordinator storage is rejected. These checks protect layout compatibility; upgrade authorization and retained request behavior are tested separately through the proxy.
 
 After an intentional compatible addition, regenerate and review the snapshot:
 
@@ -21,7 +21,7 @@ python3 contracts/script/check-upgrade-safety.py --write-snapshot
 
 Regeneration first checks compatibility with the existing snapshot. CI also compares the compiled layout with the base revision's snapshot, so committing an incompatible regenerated snapshot cannot bypass the gate. The initial adoption PR bootstraps this check because its base predates the snapshot. Subsequent PRs remain checked against the existing base snapshot, including when a PR deletes or replaces its own snapshot.
 
-The integration gate tests compile source mutations that change the coordinator's namespace location, mapped Request packing, and drand array element packing. Each must fail against the committed snapshot. They restore the source after each run.
+The integration gate tests compile source mutations that change the coordinator's namespace location, mapped Request packing, and drand array element packing. Each must fail against the committed snapshot. They also reject snapshot regeneration when a new namespace starts at an existing namespace's root or its next occupied slot, or its range exceeds uint256. They restore the source and snapshot after each run.
 
 When upgrading a pre-admin tracer proxy, the owner must initialize the appended parameters atomically:
 

@@ -42,6 +42,37 @@ class StorageGateTest(unittest.TestCase):
 
 class CompiledLayoutTest(unittest.TestCase):
     @unittest.skipUnless('--integration' in sys.argv, 'pass --integration to compile real source mutations')
+    def test_snapshot_regeneration_rejects_overlapping_namespace_ranges(self):
+        source = SCRIPT.parents[1] / 'src/VRFCoordinator.sol'
+        snapshot = SCRIPT.parents[1] / 'storage-layout/VRFCoordinator.json'
+        original, original_snapshot = source.read_text(), snapshot.read_bytes()
+        declaration = 'contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {'
+        location = int('93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900', 16)
+        try:
+            for start, fields, error in [
+                (location, 'uint256 value;', 'overlap'),
+                (location + 1, 'uint256 value;', 'overlap'),
+                (2**256 - 1, 'uint256 first; uint256 second;', 'exceeds uint256'),
+            ]:
+                with self.subTest(location=hex(start)):
+                    snapshot.write_bytes(original_snapshot)
+                    injected = f'''
+    /// @custom:storage-location erc7201:test.overlapping
+    struct OverlappingStorage {{ {fields} }}
+    function _overlappingStorage() private pure returns (OverlappingStorage storage result) {{
+        assembly {{ result.slot := 0x{start:064x} }}
+    }}
+'''
+                    source.write_text(original.replace(declaration, declaration + injected))
+                    result = subprocess.run([sys.executable, str(SCRIPT), '--write-snapshot'], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn(error, result.stderr)
+                    self.assertEqual(snapshot.read_bytes(), original_snapshot)
+        finally:
+            source.write_text(original)
+            snapshot.write_bytes(original_snapshot)
+
+    @unittest.skipUnless('--integration' in sys.argv, 'pass --integration to compile real source mutations')
     def test_compiler_detects_namespace_slot_and_nested_layout_mutations(self):
         source = SCRIPT.parents[1] / 'src/VRFCoordinator.sol'
         original = source.read_text()
