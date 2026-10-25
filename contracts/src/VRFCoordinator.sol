@@ -284,7 +284,8 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint32 keyId = $.keyIds[keyHash];
         if (keyId == 0) revert UnknownKey();
         KeyState state = _provingKey(keyId).state;
-        if (state != KeyState.Active && state != KeyState.Draining) revert InvalidKeyTransition();
+        // A registered key is never None, so only Revoked and Retired follow Draining.
+        if (state > KeyState.Draining) revert InvalidKeyTransition();
         $.keys[keyId].state = KeyState.Revoked;
         if ($.activeKeyId == keyId) $.activeKeyId = 0;
         emit KeyStateChanged(keyId, KeyState.Revoked);

@@ -26,18 +26,10 @@ async function main() {
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  // An explicit hash also permits serving a Draining Key after rotation.
-  let keyHash = parseKeyHash(process.env.PROVING_KEY_HASH ?? '');
-  if (process.env.PROVING_KEY_HASH !== undefined && !keyHash) throw new Error('Invalid key hash');
-  if (!keyHash) {
-    const keyId = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'activeKeyId' });
-    const [registered] = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [keyId] });
-    keyHash = parseKeyHash(registered);
-  }
-  if (!keyHash) throw new Error('Invalid key hash');
-  const provingKey = ProvingKey.fromHex(await new AwsSecretSource().load(secretName(keyHash)));
-  if (provingKey.keyHash !== keyHash) throw new Error('Proving Key mismatch');
-  const worker = createWorker({ rpcUrl, relayUrl, coordinator, chain, fromBlock, fulfillerPrivateKey, provingKey });
+  // Keys are loaded by keyHash as requests bound to them arrive, so a Draining key keeps serving after rotation.
+  const secrets = new AwsSecretSource();
+  const loadProvingKey = async (keyHash: Hex) => { const parsed = parseKeyHash(keyHash); if (!parsed) throw new Error('Invalid key hash'); return ProvingKey.fromHex(await secrets.load(secretName(parsed))); };
+  const worker = createWorker({ rpcUrl, relayUrl, coordinator, chain, fromBlock, fulfillerPrivateKey, loadProvingKey });
   const stop = new AbortController();
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
