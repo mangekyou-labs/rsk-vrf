@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { it } from 'node:test';
 import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseEventLogs, type Abi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { coordinatorAbi } from '../src/coordinator.ts';
+import { composeFulfillment, coordinatorAbi } from '../src/coordinator.ts';
 import { createWorker } from '../src/worker.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 
@@ -84,7 +84,9 @@ it('real rskj: upgrade preserves requests and balances; worker fulfills, settles
     const submitted = await worker.pollOnce();
     assert.equal(submitted[0]?.status, 'submitted', 'same queued request retries after simulation failure');
     const fulfilledReceipt = await receipt(submitted[0]!.transactionHash!);
-    assert.equal((await client.getTransaction({ hash: submitted[0]!.transactionHash! })).gas, 652_000n, 'plain requests use the verification budget without reserving an unused callback cap');
+    const signature = (await (await fetch(`${relayUrl}/public/${record.targetRound}`)).json() as { signature: string }).signature;
+    const composed = composeFulfillment({ chainId: 33n, coordinator, requester: requester.address, requestId, targetRound: record.targetRound, signature: `0x${signature.replace(/^0x/, '')}` }, key);
+    assert.equal((await client.getTransaction({ hash: submitted[0]!.transactionHash! })).gas, 652_000n + 20_000n * BigInt(composed.hashToCurveTries - 1), 'plain requests budget actual verification work without an unused callback cap');
     const fulfilled = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs })[0]!;
     assert.equal(fulfilled.args.fulfiller.toLowerCase(), fulfiller.address.toLowerCase());
     assert.notEqual(requester.address, fulfiller.address);

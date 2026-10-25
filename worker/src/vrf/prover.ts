@@ -69,11 +69,15 @@ const ySquared = (x: bigint) => mod(x * x * x + 7n, P);
 const isSquare = (a: bigint) => Point.Fp.pow(a, (P - 1n) / 2n) === 1n;
 
 /** hashToCurve is VRF.sol's hashToCurve(pk, input): try-and-increment, even y. */
-function hashToCurve(pk: Point, alpha: bigint): Point {
+function hashToCurve(pk: Point, alpha: bigint): { point: Point; tries: number } {
   let x = fieldHash(concatBytes(HASH_TO_CURVE_PREFIX, pointBytes(pk), word(alpha)));
-  while (!isSquare(ySquared(x))) x = fieldHash(word(x));
+  let tries = 1;
+  while (!isSquare(ySquared(x))) {
+    x = fieldHash(word(x));
+    tries++;
+  }
   const y = Point.Fp.pow(ySquared(x), (P + 1n) / 4n);
-  return Point.fromAffine({ x, y: y % 2n === 0n ? y : P - y });
+  return { point: Point.fromAffine({ x, y: y % 2n === 0n ? y : P - y }), tries };
 }
 
 function ethAddress(p: Point): Uint8Array {
@@ -102,6 +106,8 @@ export function projectiveECAddZ(p: Point, q: Point): bigint {
 export interface Proven {
   readonly proof: Proof;
   readonly beta: bigint;
+  /** Candidate points tested, including the successful one. */
+  readonly hashToCurveTries: number;
 }
 
 export function publicKeyOf(secret: bigint): Point {
@@ -115,7 +121,7 @@ export function publicKeyOf(secret: bigint): Point {
 export function prove(secret: bigint, alpha: bigint): Proven {
   if (alpha < 0n || alpha >= 1n << 256n) throw new RangeError('Alpha must be a 256-bit word');
   const pk = publicKeyOf(secret);
-  const h = hashToCurve(pk, alpha);
+  const { point: h, tries: hashToCurveTries } = hashToCurve(pk, alpha);
   const gamma = h.multiply(secret);
   for (let candidate = 0; ; candidate++) {
     const k = nonce(secret, alpha, candidate);
@@ -144,6 +150,7 @@ export function prove(secret: bigint, alpha: bigint): Proven {
         zInv: Point.Fp.inv(projectiveECAddZ(cGamma, sHash)),
       },
       beta,
+      hashToCurveTries,
     };
   }
 }

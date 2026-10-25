@@ -15,7 +15,8 @@ describe('ProvingKey.prove', () => {
   for (const v of vectors) {
     it(`matches Chainlink's Go prover byte for byte: ${v.name} (${v.hashToCurveTries} tries)`, () => {
       const key = ProvingKey.fromHex(v.secretKey);
-      const { proof, beta } = key.prove(BigInt(v.proof.seed));
+      const { proof, beta, hashToCurveTries } = key.prove(BigInt(v.proof.seed));
+      assert.equal(hashToCurveTries, v.hashToCurveTries, 'hash-to-curve work matches independent Go count');
 
       assert.deepEqual([...proof.pk], pair(v.proof.pk), 'pk');
       assert.deepEqual([...proof.gamma], pair(v.proof.gamma), 'gamma');
