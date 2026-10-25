@@ -131,12 +131,14 @@ it('real rskj: full callback caps, isolated failures and reserve boundaries', { 
     // A callback may take a different branch between simulation and mining. The
     // worker must still fund the frozen full cap, including at the maximum cap.
     for (const cap of [25_000, 2_500_000]) {
-      const pending = await request(cap, 0);
+      let pending = await request(cap, 0);
+      // Force a multi-try proof so a fixed verification allowance fails this gate.
+      while (pending.composed.hashToCurveTries < 2) pending = await request(cap, 0);
       const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, fromBlock: pending.fromBlock, nowSeconds: () => beacon.genesis + (pending.record.targetRound - 1n) * beacon.period });
       const result = await worker.pollOnce();
       assert.equal(result[0]?.status, 'submitted');
       const hash = result[0]!.transactionHash!;
-      assert.equal((await client.getTransaction({ hash })).gas, 652_000n + BigInt(cap), 'worker reserves full frozen cap even for a cheap callback');
+      assert.equal((await client.getTransaction({ hash })).gas, 652_000n + 20_000n * BigInt(pending.composed.hashToCurveTries - 1) + BigInt(cap), 'worker reserves full frozen cap even for a cheap callback');
       await receipt(hash);
       await verifySettled(pending.requestId, pending.composed.beta);
     }
