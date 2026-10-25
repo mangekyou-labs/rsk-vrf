@@ -77,3 +77,56 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+
+  worker-regtest:
+    name: Worker on rskj regtest
+    runs-on: ubuntu-latest
+    services:
+      rskj:
+        image: rsksmart/rskj:VETIVER-9.0.4
+        ports: [4444:4444]
+        env:
+          DEFAULT_JVM_OPTS: -Xms256m -Xmx1g
+          RSKJ_OPTS: --regtest
+          RSKJ_SYS_PROPS: >-
+            -Drpc.providers.web.http.bind_address=0.0.0.0
+            -Drpc.providers.web.http.hosts.0=localhost
+            -Drpc.providers.web.http.hosts.1=127.0.0.1
+            -Drpc.providers.web.http.hosts.2=::1
+            -Dminer.client.enabled=false
+            -Dminer.server.enabled=true
+            -Dtransaction.accountTxRateLimit.enabled=false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/vrf-vectors-go/go.mod
+          cache-dependency-path: tools/vrf-vectors-go/go.sum
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
+      - name: Build contracts and offline signing relay
+        run: |
+          (cd contracts && forge build)
+          (cd tools/vrf-vectors-go && go build -o "$RUNNER_TEMP/test-relay" .)
+      - name: Install worker
+        run: npm ci --prefix worker
+      - name: Wait for real rskj RPC
+        run: |
+          for attempt in $(seq 1 90); do
+            if curl -fsS -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' http://127.0.0.1:4444 | jq -e '.result == "0x21"'; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Deploy, request, fulfill and derive on rskj
+        env:
+          RSK_RPC_URL: http://127.0.0.1:4444
+          TEST_RELAY_BIN: ${{ runner.temp }}/test-relay
+        run: npm run test:integration --prefix worker
