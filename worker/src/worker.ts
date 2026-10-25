@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, http, parseAbiItem, type Address, type Chain, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, http, parseAbiItem, type AbiEvent, type Address, type Chain, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { composeFulfillment, coordinatorAbi } from './coordinator.ts';
 import type { ProvingKey } from './proving-key.ts';
@@ -10,43 +10,150 @@ export interface WorkerConfig {
   fulfillerPrivateKey: Hex;
   provingKey: ProvingKey;
   relayUrl: string;
-  fromBlock: bigint;
+  /** Ignored. Each poll scans `latest − 2,400 − 100` itself. */
+  fromBlock?: bigint;
   nowSeconds?: () => bigint;
   fetch?: typeof globalThis.fetch;
 }
 export type PollResult = { requestId: Hex; status: 'waiting' | 'skipped' | 'retry' | 'submitted'; transactionHash?: Hex };
 
-/** Pending IDs survive round waits and failed simulations. Durable restart,
- * backfill and reorg handling belong to the production follow-up (#35). */
+const BACKFILL_BLOCKS = 2_400n + 100n;
+const MAX_LOG_SPAN = 5_000n;
+const FULFILL_GAS = 5_000_000n;
+
+const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
+const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)');
+const refundedEvent = parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)');
+
+type OutcomeLog = { blockNumber: bigint | null; args: { requestId: Hex } };
+
+function isLogCapError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : '';
+  return /limit|too many|exceed|more than|20[,_ ]?000|response size|query returned more/i.test(message);
+}
+
+/** Stateless backfill. An id stays until Fulfilled or Refunded is `confirmations` deep. */
 export function createWorker(config: WorkerConfig) {
-  const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl), cacheTime: 0 });
   const wallet = createWalletClient({ account: privateKeyToAccount(config.fulfillerPrivateKey), chain: config.chain, transport: http(config.rpcUrl) });
-  const pending = new Set<Hex>();
-  let cursor = config.fromBlock;
+  const pending = new Map<Hex, { outcomeBlock: bigint | null }>();
+  const finished = new Map<Hex, bigint>();
+  const reportedGone = new Set<Hex>();
+  const broadcast = new Map<Hex, Hex>();
   const fetchRelay = config.fetch ?? globalThis.fetch;
   const now = config.nowSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
+
+  async function logsFor(event: AbiEvent, fromBlock: bigint, toBlock: bigint): Promise<OutcomeLog[]> {
+    if (toBlock < fromBlock) return [];
+    const span = toBlock - fromBlock + 1n;
+    if (span > MAX_LOG_SPAN) {
+      const mid = fromBlock + (toBlock - fromBlock) / 2n;
+      return [...await logsFor(event, fromBlock, mid), ...await logsFor(event, mid + 1n, toBlock)];
+    }
+    try {
+      const logs = await publicClient.getLogs({ address: config.coordinator, event, fromBlock, toBlock, strict: true });
+      const parsed: OutcomeLog[] = [];
+      for (const log of logs) {
+        if (!('args' in log) || log.args == null || typeof log.args !== 'object' || !('requestId' in log.args)) continue;
+        const requestId = log.args.requestId;
+        if (typeof requestId !== 'string' || !requestId.startsWith('0x')) continue;
+        parsed.push({ blockNumber: log.blockNumber, args: { requestId: requestId as Hex } });
+      }
+      return parsed;
+    } catch (error) {
+      if (span <= 1n || !isLogCapError(error)) throw error;
+      const mid = fromBlock + (toBlock - fromBlock) / 2n;
+      return [...await logsFor(event, fromBlock, mid), ...await logsFor(event, mid + 1n, toBlock)];
+    }
+  }
+
   return {
     async pollOnce(): Promise<PollResult[]> {
       const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
-      if (cursor <= latest) {
-        const logs = await publicClient.getLogs({ address: config.coordinator, event: parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)'), fromBlock: cursor, toBlock: latest, strict: true });
-        for (const log of logs) pending.add(log.args.requestId);
-        cursor = latest + 1n;
+      const fromBlock = latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
+      const [requestedLogs, fulfilledLogs, refundedLogs] = await Promise.all([
+        logsFor(requestedEvent, fromBlock, latest),
+        logsFor(fulfilledEvent, fromBlock, latest),
+        logsFor(refundedEvent, fromBlock, latest),
+      ]);
+      const requestInWindow = new Set<Hex>();
+      for (const log of requestedLogs) {
+        if (log.blockNumber == null) continue;
+        requestInWindow.add(log.args.requestId);
+        if (!pending.has(log.args.requestId) && !finished.has(log.args.requestId)) pending.set(log.args.requestId, { outcomeBlock: null });
       }
+      const outcomeInScan = new Map<Hex, bigint>();
+      for (const log of [...fulfilledLogs, ...refundedLogs]) {
+        if (log.blockNumber == null) continue;
+        const prior = outcomeInScan.get(log.args.requestId);
+        if (prior == null || log.blockNumber < prior) outcomeInScan.set(log.args.requestId, log.blockNumber);
+      }
+      for (const [id, outcomeBlock] of finished) {
+        if (outcomeBlock >= fromBlock && outcomeBlock <= latest && !outcomeInScan.has(id)) {
+          finished.delete(id);
+          pending.set(id, { outcomeBlock: null });
+        }
+      }
+      for (const [id, state] of pending) {
+        const seen = outcomeInScan.get(id);
+        if (seen != null) state.outcomeBlock = state.outcomeBlock == null || seen < state.outcomeBlock ? seen : state.outcomeBlock;
+        else if (state.outcomeBlock != null && state.outcomeBlock >= fromBlock && state.outcomeBlock <= latest) state.outcomeBlock = null;
+      }
+
       const results: PollResult[] = [];
-      for (const requestId of pending) {
+      for (const requestId of [...pending.keys()]) {
+        const state = pending.get(requestId);
+        if (!state) continue;
         try {
           const request = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId], blockTag: 'latest' });
-          if (request.status !== 1 || latest > BigInt(request.deadline)) {
-            pending.delete(requestId); results.push({ requestId, status: 'skipped' }); continue;
+          if (request.status === 0) {
+            pending.delete(requestId);
+            broadcast.delete(requestId);
+            if (!reportedGone.has(requestId)) {
+              reportedGone.add(requestId);
+              results.push({ requestId, status: 'skipped' });
+            }
+            continue;
+          }
+          reportedGone.delete(requestId);
+          if (request.status === 2 || request.status === 3) {
+            broadcast.delete(requestId);
+            const depth = BigInt(request.confirmations);
+            const agedOut = state.outcomeBlock == null && !requestInWindow.has(requestId);
+            if (agedOut || (state.outcomeBlock != null && latest >= state.outcomeBlock + depth)) {
+              if (state.outcomeBlock != null) finished.set(requestId, state.outcomeBlock);
+              pending.delete(requestId);
+              continue;
+            }
+            results.push({ requestId, status: 'waiting' });
+            continue;
+          }
+          if (request.status !== 1) {
+            results.push({ requestId, status: 'skipped' });
+            continue;
+          }
+          if (latest > BigInt(request.deadline)) {
+            results.push({ requestId, status: 'skipped' });
+            continue;
+          }
+          const [keyHash, , keyState] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
+          if (keyState === 0 || keyHash.toLowerCase() !== config.provingKey.keyHash.toLowerCase()) {
+            results.push({ requestId, status: 'skipped' });
+            continue;
+          }
+          const confirmations = BigInt(request.confirmations);
+          if (latest < BigInt(request.requestBlock) + confirmations) {
+            results.push({ requestId, status: 'waiting' });
+            continue;
           }
           const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
-          if (latest < BigInt(request.requestBlock) + BigInt(request.confirmations) || now() < beacon.genesis + (request.targetRound - 1n) * beacon.period) {
-            results.push({ requestId, status: 'waiting' }); continue;
+          if (now() < beacon.genesis + (request.targetRound - 1n) * beacon.period) {
+            results.push({ requestId, status: 'waiting' });
+            continue;
           }
-          const [keyHash, , state] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
-          if (state === 0 || keyHash.toLowerCase() !== config.provingKey.keyHash.toLowerCase()) {
-            pending.delete(requestId); results.push({ requestId, status: 'skipped' }); continue;
+          if (broadcast.has(requestId)) {
+            results.push({ requestId, status: 'waiting' });
+            continue;
           }
           const response = await fetchRelay(`${config.relayUrl.replace(/\/$/, '')}/public/${request.targetRound}`, { signal: AbortSignal.timeout(10_000) });
           if (!response.ok) throw new Error('Beacon unavailable');
@@ -54,12 +161,11 @@ export function createWorker(config: WorkerConfig) {
           if (typeof body !== 'object' || body === null || !('round' in body) || BigInt(String(body.round)) !== request.targetRound || !('signature' in body) || typeof body.signature !== 'string') throw new Error('Invalid beacon response');
           const signature = (body.signature.startsWith('0x') ? body.signature : `0x${body.signature}`) as Hex;
           const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: request.requester, requestId, targetRound: request.targetRound, signature }, config.provingKey);
-          const { request: simulated } = await publicClient.simulateContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature], account: wallet.account, type: 'legacy', gas: 5_000_000n, gasPrice: (await publicClient.getGasPrice()) || 1n });
+          const { request: simulated } = await publicClient.simulateContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature], account: wallet.account, type: 'legacy', gas: FULFILL_GAS, gasPrice: (await publicClient.getGasPrice()) || 1n });
           const transactionHash = await wallet.writeContract(simulated);
-          pending.delete(requestId);
+          broadcast.set(requestId, transactionHash);
           results.push({ requestId, status: 'submitted', transactionHash });
         } catch {
-          // SDK errors can include signing payloads; report only a safe outcome.
           results.push({ requestId, status: 'retry' });
         }
       }

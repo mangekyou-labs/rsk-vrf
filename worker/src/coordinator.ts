@@ -20,6 +20,7 @@ export const coordinatorAbi = parseAbi([
   'function deriveRandom(bytes32 requestId, bytes32 context) view returns (uint256)',
   'event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)',
   'event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)',
+  'event Refunded(bytes32 indexed requestId, uint8 reason)',
 ]);
 
 const DOMAIN_ALPHA = keccak256(stringToHex('rsk-vrf/v1/alpha'));
