@@ -327,4 +327,90 @@ describe('worker regtest', { concurrency: 1 }, () => {
       }
     });
   });
+
+  it('reports a stall 30s after the round with no refund, then fulfills when the relay recovers', { timeout: 180_000 }, async () => {
+    await withRelay(18774, async relayUrl => {
+      let serve = false;
+      const publicHits = [0, 0, 0];
+      const healthHits = [0, 0, 0];
+      const servers = [0, 1, 2].map(index => createServer((req, res) => {
+        const path = req.url ?? '';
+        if (path.startsWith('/v2/beacons/evmnet/health')) {
+          healthHits[index]!++;
+          res.writeHead(503);
+          res.end();
+          return;
+        }
+        if (index === 2 && serve && path.startsWith('/public/')) {
+          publicHits[index]!++;
+          fetch(`${relayUrl}${path}`).then(async response => {
+            const body = Buffer.from(await response.arrayBuffer());
+            res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' });
+            res.end(body);
+          }).catch(() => { res.writeHead(502); res.end(); });
+          return;
+        }
+        publicHits[index]!++;
+        res.writeHead(503);
+        res.end();
+      }));
+      const urls = await Promise.all(servers.map(listen));
+      try {
+        await fund([requester, fulfiller]);
+        const { coordinator, key, beacon } = await deployCoordinator();
+        const { requestId, requestReceipt, record } = await requestRandomness(coordinator, `0x${'44'.repeat(32)}`);
+        await mineBlocks(Number(record.confirmations));
+        const roundTime = beacon.genesis + (record.targetRound - 1n) * beacon.period;
+        let now = roundTime;
+        const lines: string[] = [];
+        const before = await nonceOf(fulfiller.address);
+        const worker = createWorker({
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          relayUrls: urls, drandPin: pinOf(beacon), nowSeconds: () => now,
+          report: line => lines.push(line),
+        });
+        const early = await worker.pollOnce();
+        assert.equal(forRequest(early, requestId)?.status, 'retry');
+        assert.equal(forRequest(early, requestId)?.transactionHash, undefined);
+        assert.deepEqual(healthHits, [0, 0, 0], 'a round that is not yet 30s late does not check health');
+        now = roundTime + 29n;
+        const almost = await worker.pollOnce();
+        assert.equal(forRequest(almost, requestId)?.status, 'retry');
+        assert.deepEqual(healthHits, [0, 0, 0]);
+        now = roundTime + 30n;
+        const stalled = await worker.pollOnce();
+        assert.equal(forRequest(stalled, requestId)?.status, 'stalled');
+        assert.equal(forRequest(stalled, requestId)?.transactionHash, undefined);
+        assert.deepEqual(healthHits, [1, 1, 1]);
+        assert.deepEqual(lines, [`worker: drand config ${record.drandConfigId} round ${record.targetRound} stalled`]);
+        const line = lines[0] ?? '';
+        assert.equal(line.includes('0x'), false);
+        assert.equal(line.includes(String(fixture.vectors[0].vrf.secretKey).replace(/^0x/, '')), false);
+        assert.equal(line.includes(String(fixture.drand.secretKey).replace(/^0x/, '')), false);
+        const again = await worker.pollOnce();
+        assert.equal(forRequest(again, requestId)?.status, 'stalled');
+        assert.equal(lines.length, 1, 'a stall is reported once per episode');
+        assert.deepEqual(healthHits, [1, 1, 1]);
+        assert.equal(await nonceOf(fulfiller.address), before);
+        const still = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+        assert.equal(still.status, 1);
+        const refunds = await client.getLogs({ address: coordinator, event: parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)'), args: { requestId }, fromBlock: requestReceipt.blockNumber, toBlock: await head(), strict: true });
+        assert.equal(refunds.length, 0);
+        serve = true;
+        const submitted = await worker.pollOnce();
+        assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
+        const fulfilledReceipt = await receipt(forRequest(submitted, requestId)!.transactionHash!);
+        const context = fixture.vectors[0].derivations[0].context as Hex;
+        const expectedUrl = new URL(`${relayUrl}/expected`);
+        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+        const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
+        const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+        assert.equal(finalRecord.status, 2);
+        assert.equal(finalRecord.beta, expected.beta);
+        assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs }).length, 1);
+      } finally {
+        await Promise.all(servers.map(closeServer));
+      }
+    });
+  });
 });
