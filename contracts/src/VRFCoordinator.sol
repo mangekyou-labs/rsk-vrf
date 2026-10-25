@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {BLS} from "./vendor/bls-bn254/BLS.sol";
 import {VRF} from "./vendor/chainlink/VRF.sol";
 import {DrandEvmnet} from "./DrandEvmnet.sol";
@@ -12,10 +13,9 @@ import {VRFDerivation} from "./VRFDerivation.sol";
 /// @notice Requesters ask for randomness bound to the Active Proving Key and a future
 ///   drand round; any Fulfiller EOA submits the drand signature and a VRF proof over
 ///   Alpha; anyone reads Beta and derived values afterwards.
-/// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage. This is
-///   the first slice: fees, confirmations, Deadlines, refunds, revocation and callbacks
-///   come later, though the request record already has room for them.
-contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
+/// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage.
+///   Revocation and callbacks come in later slices.
+contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, ReentrancyGuard {
     bytes32 internal constant DOMAIN_ALPHA = keccak256("rsk-vrf/v1/alpha");
     bytes32 internal constant DOMAIN_VRF_BETA = keccak256("rsk-vrf/v1/beta");
 
@@ -28,6 +28,11 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         Pending,
         Fulfilled,
         Refunded
+    }
+
+    enum RefundReason {
+        Deadline,
+        KeyRevoked
     }
 
     enum KeyState {
@@ -74,6 +79,10 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         uint32 activeKeyId;
         uint64 roundOffset;
         DrandConfig[] drandConfigs;
+        uint96 fee;
+        uint48 timeoutBlocks;
+        uint16 confirmations;
+        mapping(address payee => uint256) payeeBalances;
     }
 
     // keccak256(abi.encode(uint256(keccak256("rsk-vrf.storage.VRFCoordinator")) - 1)) & ~bytes32(uint256(0xff))
@@ -90,6 +99,11 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         uint96 fee,
         uint32 callbackGasCap
     );
+    event FeeConfigSet(uint96 amount);
+    event ConfirmationsSet(uint16 confirmations);
+    event TimeoutBlocksSet(uint48 timeoutBlocks);
+    event Refunded(bytes32 indexed requestId, RefundReason reason);
+    event FeesWithdrawn(address indexed payee, uint256 amount);
     event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller);
     event KeyRegistered(uint32 keyId, bytes32 keyHash, address payee);
     event KeyStateChanged(uint32 keyId, KeyState state);
@@ -100,9 +114,15 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
     error RequestNotPending(Status status);
     error RequestPending();
     error RequestRefunded();
+    error TooEarly();
+    error DeadlinePassed();
     error WrongProvingKey();
     error InvalidDrandSignature();
+    error NotRefundableYet();
+    error RefundTransferFailed();
+    error FeeTransferFailed();
     error NoActiveKey();
+    error IncorrectFee(uint256 expected, uint256 sent);
     error InvalidProvingKey();
     error KeyAlreadyRegistered();
     error ValueOutOfBounds(bytes32 param);
@@ -116,12 +136,39 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         __Ownable_init(owner);
         CoordinatorStorage storage $ = _storage();
         $.roundOffset = DEFAULT_ROUND_OFFSET;
+        $.fee = 2e13;
+        $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
+        $.confirmations = DEFAULT_CONFIRMATIONS;
         if (drand.period == 0 || !BLS.isValidPublicKey(drand.publicKey)) revert ValueOutOfBounds("drandConfig");
         $.drandConfigs.push(drand);
         emit DrandConfigAdded(0, drand.publicKey, drand.genesis, drand.period);
     }
 
     // ------------------------------------------------------------------ admin
+
+    /// @notice Changes the flat native-rBTC fee for new requests only.
+    function setFeeConfig(uint256 amount) external onlyOwner {
+        if (amount > type(uint96).max) revert ValueOutOfBounds("fee");
+        // The bound above guarantees the stored request fee fits uint96.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint96 boundedAmount = uint96(amount);
+        _storage().fee = boundedAmount;
+        emit FeeConfigSet(boundedAmount);
+    }
+
+    /// @notice Changes the confirmation wait for new requests only.
+    function setConfirmations(uint16 value) external onlyOwner {
+        if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
+        _storage().confirmations = value;
+        emit ConfirmationsSet(value);
+    }
+
+    /// @notice Changes the lifetime in blocks for new requests only.
+    function setTimeoutBlocks(uint48 value) external onlyOwner {
+        if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
+        _storage().timeoutBlocks = value;
+        emit TimeoutBlocksSet(value);
+    }
 
     /// @notice Registers a Proving Key and makes it Active; the previous Active Key
     ///   moves to Draining. The Payee is fixed here.
@@ -151,10 +198,12 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
     // -------------------------------------------------------------- lifecycle
 
     /// @notice Requests randomness bound to the Active Key and a future drand round.
-    function request(bytes32 tag) external returns (bytes32 requestId) {
+    function request(bytes32 tag) external payable returns (bytes32 requestId) {
         CoordinatorStorage storage $ = _storage();
         uint32 keyId = $.activeKeyId;
         if (keyId == 0) revert NoActiveKey();
+        uint96 requestFee = $.fee;
+        if (msg.value != requestFee) revert IncorrectFee(requestFee, msg.value);
 
         uint256 nonce = $.requesterNonces[msg.sender]++;
         requestId = keccak256(abi.encode(block.chainid, address(this), msg.sender, nonce, tag));
@@ -164,7 +213,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         if (block.timestamp < drand.genesis) revert ValueOutOfBounds("drandGenesis");
         uint64 targetRound = uint64((block.timestamp - drand.genesis) / drand.period + 1 + $.roundOffset);
         uint48 requestBlock = uint48(block.number);
-        uint48 deadline = requestBlock + DEFAULT_TIMEOUT_BLOCKS;
+        uint48 deadline = requestBlock + $.timeoutBlocks;
 
         $.requests[requestId] = Request({
             requester: msg.sender,
@@ -172,14 +221,14 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
             callbackGasCap: 0,
             requestBlock: requestBlock,
             drandConfigId: drandConfigId,
-            fee: 0,
+            fee: requestFee,
             targetRound: targetRound,
             deadline: deadline,
-            confirmations: DEFAULT_CONFIRMATIONS,
+            confirmations: $.confirmations,
             keyId: keyId,
             beta: bytes32(0)
         });
-        emit RandomnessRequested(requestId, msg.sender, tag, keyId, targetRound, requestBlock, deadline, 0, 0);
+        emit RandomnessRequested(requestId, msg.sender, tag, keyId, targetRound, requestBlock, deadline, requestFee, 0);
     }
 
     /// @notice Fulfils a Pending request. `proof.seed` is ignored: the proof is checked
@@ -191,6 +240,8 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         Status status = r.status;
         if (status == Status.None) revert UnknownRequest();
         if (status != Status.Pending) revert RequestNotPending(status);
+        if (block.number < uint256(r.requestBlock) + r.confirmations) revert TooEarly();
+        if (block.number > r.deadline) revert DeadlinePassed();
         if (keccak256(abi.encode(proof.pk)) != $.keys[r.keyId].keyHash) revert WrongProvingKey();
 
         uint64 targetRound = r.targetRound;
@@ -213,10 +264,52 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
 
         r.status = Status.Fulfilled;
         r.beta = beta;
+        $.payeeBalances[$.keys[r.keyId].payee] += r.fee;
         emit Fulfilled(requestId, beta, msg.sender);
     }
 
+    /// @notice Anyone may return a Pending request's Escrow after its hard Deadline.
+    /// @dev A failed push rolls back the status change, leaving the request Pending.
+    function timeoutRefund(bytes32 requestId) external nonReentrant {
+        Request storage r = _storage().requests[requestId];
+        Status status = r.status;
+        if (status == Status.None) revert UnknownRequest();
+        if (status != Status.Pending) revert RequestNotPending(status);
+        if (block.number <= r.deadline) revert NotRefundableYet();
+        r.status = Status.Refunded;
+        (bool sent,) = r.requester.call{value: r.fee}("");
+        if (!sent) revert RefundTransferFailed();
+        emit Refunded(requestId, RefundReason.Deadline);
+    }
+
+    /// @notice Withdraws only the caller's credited fees; no-op for an empty balance.
+    function withdrawFees() external nonReentrant {
+        CoordinatorStorage storage $ = _storage();
+        uint256 amount = $.payeeBalances[msg.sender];
+        if (amount == 0) return;
+        $.payeeBalances[msg.sender] = 0;
+        (bool sent,) = msg.sender.call{value: amount}("");
+        if (!sent) revert FeeTransferFailed();
+        emit FeesWithdrawn(msg.sender, amount);
+    }
+
     // ------------------------------------------------------------------ reads
+
+    function fee() external view returns (uint96) {
+        return _storage().fee;
+    }
+
+    function confirmations() external view returns (uint16) {
+        return _storage().confirmations;
+    }
+
+    function timeoutBlocks() external view returns (uint48) {
+        return _storage().timeoutBlocks;
+    }
+
+    function payeeBalance(address payee) external view returns (uint256) {
+        return _storage().payeeBalances[payee];
+    }
 
     function getRequest(bytes32 requestId) external view returns (Request memory) {
         return _storage().requests[requestId];
