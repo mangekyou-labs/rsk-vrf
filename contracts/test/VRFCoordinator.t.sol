@@ -116,8 +116,6 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
     address internal payee = makeAddr("payee");
     address internal fulfiller = makeAddr("fulfiller");
 
-    // ERC-7201 slot of "rsk-vrf.storage.VRFCoordinator"; requests is its first member.
-    bytes32 internal constant STORAGE_LOCATION = 0x93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900;
     // ERC-1967: bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1).
     bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -139,6 +137,7 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         );
         deployCodeTo("ERC1967Proxy.sol:ERC1967Proxy", abi.encode(address(implementation), init), v0.coordinator);
         coordinator = VRFCoordinator(v0.coordinator);
+        vm.deal(address(this), 1 ether);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -151,8 +150,10 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
     /// Makes the vector's request at its timestamp, from its requester.
     function requestAs(RequestVector memory v) internal returns (bytes32 requestId) {
         vm.warp(v.requestTimestamp);
+        uint96 requestFee = coordinator.fee();
+        vm.deal(v.requester, 1 ether);
         vm.prank(v.requester);
-        requestId = coordinator.request(v.tag);
+        requestId = coordinator.request{value: requestFee}(v.tag);
     }
 
     /// Registers the key and makes every vector's request, in file order.
@@ -161,6 +162,7 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         for (uint256 i; i < count; i++) {
             requestAs(vector(i));
         }
+        vm.roll(block.number + 12);
     }
 
     function fulfillAs(address who, RequestVector memory v) internal {
@@ -184,13 +186,14 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
                 v.targetRound,
                 uint48(block.number),
                 uint48(block.number + 1200),
-                0,
+                2e13,
                 0
             );
             assertEq(requestAs(v), v.requestId, string.concat(v.name, ": requestId"));
 
             vm.expectEmit(address(coordinator));
             emit VRFCoordinator.Fulfilled(v.requestId, v.beta, fulfiller);
+            vm.roll(block.number + 12);
             fulfillAs(fulfiller, v);
 
             VRFCoordinator.Request memory r = coordinator.getRequest(v.requestId);
@@ -205,6 +208,37 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
                 assertEq(coordinator.deriveRandom(v.requestId, d.context), d.random, v.name);
             }
         }
+    }
+
+    function test_FulfillWaitsForFrozenConfirmationsAndHardDeadline() public {
+        registerGoldenKey();
+        RequestVector memory v = vector(0);
+        requestAs(v);
+        VRFCoordinator.Request memory r = coordinator.getRequest(v.requestId);
+        vm.expectRevert(abi.encodeWithSignature("TooEarly()"));
+        fulfillAs(fulfiller, v);
+        vm.roll(r.requestBlock + r.confirmations - 1);
+        vm.expectRevert(abi.encodeWithSignature("TooEarly()"));
+        fulfillAs(fulfiller, v);
+        vm.roll(r.requestBlock + r.confirmations);
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_FulfillSucceedsAtDeadline() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        vm.roll(coordinator.getRequest(v.requestId).deadline);
+        fulfillAs(fulfiller, v);
+        assertEq(uint8(coordinator.getRequest(v.requestId).status), uint8(VRFCoordinator.Status.Fulfilled));
+    }
+
+    function test_FulfillRejectsAfterDeadlineBeforeProofChecks() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        vm.roll(coordinator.getRequest(v.requestId).deadline + 1);
+        v.proof.pk[1] += 1;
+        vm.expectRevert(abi.encodeWithSignature("DeadlinePassed()"));
+        fulfillAs(fulfiller, v);
     }
 
     // ------------------------------------------------------------- fulfill
@@ -230,8 +264,12 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         requestAll();
         RequestVector memory v = vector(0);
         v.proof.c ^= 1;
+        uint256 escrow = address(coordinator).balance;
         vm.expectRevert(bytes("addr(c*pk+s*g)!=_uWitness"));
         fulfillAs(fulfiller, v);
+        assertEq(coordinator.payeeBalance(payee), 0);
+        assertEq(address(coordinator).balance, escrow);
+        assertEq(uint8(coordinator.getRequest(v.requestId).status), uint8(VRFCoordinator.Status.Pending));
     }
 
     function test_FulfillRejectsUnknownRequest() public {
@@ -281,6 +319,19 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         coordinator.fulfill(v.requestId, v.proof, v.drandSignature);
     }
 
+    function test_RequestRequiresExactFee() public {
+        registerGoldenKey();
+        vm.warp(vector(0).requestTimestamp);
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(abi.encodeWithSignature("IncorrectFee(uint256,uint256)", 2e13, 0));
+        coordinator.request(bytes32(0));
+        vm.expectRevert(abi.encodeWithSignature("IncorrectFee(uint256,uint256)", 2e13, 2e13 + 1));
+        coordinator.request{value: 2e13 + 1}(bytes32(0));
+        bytes32 id = coordinator.request{value: 2e13}(bytes32(0));
+        assertEq(coordinator.getRequest(id).fee, 2e13);
+        assertEq(address(coordinator).balance, 2e13);
+    }
+
     // ------------------------------------------------------------- request
 
     function test_RequestBeforeDrandGenesisRejectsWithDomainError() public {
@@ -289,19 +340,21 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         // The 12-byte parameter label fits in bytes32.
         // forge-lint: disable-next-line(unsafe-typecast)
         vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, bytes32("drandGenesis")));
-        coordinator.request(bytes32(0));
+        coordinator.request{value: 2e13}(bytes32(0));
     }
 
     function test_RequestAtDrandGenesisBindsFutureRound() public {
         registerGoldenKey();
         vm.warp(drandGenesis());
-        bytes32 requestId = coordinator.request(bytes32(0));
+        bytes32 requestId = coordinator.request{value: 2e13}(bytes32(0));
         assertEq(coordinator.getRequest(requestId).targetRound, 41);
     }
 
     function test_RequestRequiresAnActiveKey() public {
+        RequestVector memory v = vector(0);
+        vm.warp(v.requestTimestamp);
         vm.expectRevert(VRFCoordinator.NoActiveKey.selector);
-        requestAs(vector(0));
+        coordinator.request{value: 2e13}(v.tag);
     }
 
     // --------------------------------------------------------------- reads
@@ -326,15 +379,223 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
     function test_DeriveRevertsForRefundedRequest() public {
         requestAll();
         bytes32 requestId = vector(0).requestId;
-        // Refunds land in a later slice; set the status byte (bits 160..167) directly.
-        bytes32 slot = keccak256(abi.encode(requestId, STORAGE_LOCATION));
-        uint256 word = uint256(vm.load(address(coordinator), slot));
-        word = (word & ~(uint256(0xff) << 160)) | (uint256(uint8(VRFCoordinator.Status.Refunded)) << 160);
-        vm.store(address(coordinator), slot, bytes32(word));
-        assertEq(uint8(coordinator.getRequest(requestId).status), uint8(VRFCoordinator.Status.Refunded));
+        vm.roll(coordinator.getRequest(requestId).deadline + 1);
+        coordinator.timeoutRefund(requestId);
 
         vm.expectRevert(VRFCoordinator.RequestRefunded.selector);
         coordinator.deriveRandomBytes(requestId, bytes32(0));
+    }
+
+    function test_AnyoneRefundsOnlyAfterDeadlineAndOnlyOnce() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        VRFCoordinator.Request memory r = coordinator.getRequest(v.requestId);
+        vm.roll(r.deadline);
+        vm.expectRevert(VRFCoordinator.NotRefundableYet.selector);
+        coordinator.timeoutRefund(v.requestId);
+        uint256 before = v.requester.balance;
+        uint256 escrow = address(coordinator).balance;
+        vm.roll(r.deadline + 1);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.Refunded(v.requestId, VRFCoordinator.RefundReason.Deadline);
+        vm.prank(makeAddr("refund caller"));
+        coordinator.timeoutRefund(v.requestId);
+        assertEq(v.requester.balance, before + 2e13);
+        assertEq(address(coordinator).balance, escrow - 2e13);
+        assertEq(uint8(coordinator.getRequest(v.requestId).status), uint8(VRFCoordinator.Status.Refunded));
+        vm.expectRevert(
+            abi.encodeWithSelector(VRFCoordinator.RequestNotPending.selector, VRFCoordinator.Status.Refunded)
+        );
+        coordinator.timeoutRefund(v.requestId);
+        vm.expectRevert(
+            abi.encodeWithSelector(VRFCoordinator.RequestNotPending.selector, VRFCoordinator.Status.Refunded)
+        );
+        fulfillAs(fulfiller, v);
+    }
+
+    function test_RefundRejectsUnknownAndFulfilledRequests() public {
+        vm.expectRevert(VRFCoordinator.UnknownRequest.selector);
+        coordinator.timeoutRefund(bytes32(0));
+        requestAll();
+        RequestVector memory v = vector(0);
+        fulfillAs(fulfiller, v);
+        vm.roll(coordinator.getRequest(v.requestId).deadline + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(VRFCoordinator.RequestNotPending.selector, VRFCoordinator.Status.Fulfilled)
+        );
+        coordinator.timeoutRefund(v.requestId);
+    }
+
+    function test_FailedRefundKeepsEscrowAndPendingStatusUntilRequesterAccepts() public {
+        registerGoldenKey();
+        vm.warp(vector(0).requestTimestamp);
+        FeeReceiver receiver = new FeeReceiver(coordinator);
+        bytes32 id = receiver.request{value: 2e13}();
+        uint256 escrow = address(coordinator).balance;
+        receiver.configure(true, false, id);
+        vm.roll(coordinator.getRequest(id).deadline + 1);
+        vm.expectRevert(VRFCoordinator.RefundTransferFailed.selector);
+        coordinator.timeoutRefund(id);
+        assertEq(uint8(coordinator.getRequest(id).status), uint8(VRFCoordinator.Status.Pending));
+        assertEq(address(coordinator).balance, escrow);
+        assertEq(address(receiver).balance, 0);
+        receiver.configure(false, true, id);
+        coordinator.timeoutRefund(id);
+        assertEq(address(receiver).balance, 2e13);
+        assertEq(uint8(receiver.observedStatus()), uint8(VRFCoordinator.Status.Refunded), "effects precede transfer");
+        assertTrue(receiver.refundBlocked(), "refund cannot reenter refund");
+        assertTrue(receiver.withdrawalBlocked(), "refund cannot reenter withdrawal");
+    }
+
+    function test_FailedWithdrawalKeepsCreditAndBlocksBothReentrantEntrypoints() public {
+        FeeReceiver receiver = new FeeReceiver(coordinator);
+        payee = address(receiver);
+        requestAll();
+        RequestVector memory v = vector(0);
+        fulfillAs(fulfiller, v);
+        uint256 escrow = address(coordinator).balance;
+        receiver.configure(true, false, v.requestId);
+        vm.expectRevert(VRFCoordinator.FeeTransferFailed.selector);
+        receiver.withdraw();
+        assertEq(coordinator.payeeBalance(payee), 2e13);
+        assertEq(address(coordinator).balance, escrow);
+        receiver.configure(false, true, v.requestId);
+        receiver.withdraw();
+        assertEq(address(receiver).balance, 2e13);
+        assertEq(coordinator.payeeBalance(payee), 0);
+        assertTrue(receiver.refundBlocked(), "withdrawal cannot reenter refund");
+        assertTrue(receiver.withdrawalBlocked(), "withdrawal cannot reenter withdrawal");
+    }
+
+    function test_MultipleFulfillmentsAccumulateForOneWithdrawal() public {
+        requestAll();
+        fulfillAs(fulfiller, vector(0));
+        fulfillAs(fulfiller, vector(1));
+        assertEq(coordinator.payeeBalance(payee), 4e13);
+        vm.prank(payee);
+        coordinator.withdrawFees();
+        assertEq(payee.balance, 4e13);
+        assertEq(coordinator.payeeBalance(payee), 0);
+    }
+
+    function test_ZeroFeeRequestsCanFulfill() public {
+        vm.prank(owner);
+        coordinator.setFeeConfig(0);
+        requestAll();
+        fulfillAs(fulfiller, vector(0));
+        assertEq(coordinator.getRequest(vector(0).requestId).beta, vector(0).beta);
+        assertEq(coordinator.payeeBalance(payee), 0);
+        assertEq(address(coordinator).balance, 0);
+    }
+
+    function test_FulfillmentCreditsBoundPayeeWhoWithdrawsOnce() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        uint256 escrow = address(coordinator).balance;
+        uint256 beforePayee = payee.balance;
+        uint256 beforeFulfiller = fulfiller.balance;
+        uint256[2] memory other = [
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+        ];
+        address otherPayee = makeAddr("new Active Key Payee");
+        vm.prank(owner);
+        coordinator.registerProvingKey(other, otherPayee);
+        fulfillAs(fulfiller, v);
+        assertEq(coordinator.payeeBalance(otherPayee), 0, "new Active Key cannot redirect a bound key's fee");
+        assertEq(coordinator.payeeBalance(payee), 2e13);
+        assertEq(address(coordinator).balance, escrow, "fulfillment credits without push");
+        assertEq(payee.balance, beforePayee);
+        assertEq(fulfiller.balance, beforeFulfiller);
+        vm.prank(owner);
+        coordinator.withdrawFees();
+        assertEq(coordinator.payeeBalance(payee), 2e13, "Admin cannot claim Payee fees");
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.FeesWithdrawn(payee, 2e13);
+        vm.prank(payee);
+        coordinator.withdrawFees();
+        assertEq(coordinator.payeeBalance(payee), 0);
+        assertEq(payee.balance, beforePayee + 2e13);
+        assertEq(address(coordinator).balance, escrow - 2e13);
+        vm.prank(payee);
+        coordinator.withdrawFees();
+        assertEq(payee.balance, beforePayee + 2e13, "zero balance is a no-op");
+    }
+
+    function test_ConfigChangesFreezeOpenRequestsAndSetNewRequestTerms() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        VRFCoordinator.Request memory original = coordinator.getRequest(v.requestId);
+        vm.startPrank(owner);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.FeeConfigSet(0);
+        coordinator.setFeeConfig(0);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.ConfirmationsSet(100);
+        coordinator.setConfirmations(100);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.TimeoutBlocksSet(2400);
+        coordinator.setTimeoutBlocks(2400);
+        vm.stopPrank();
+        assertEq(coordinator.fee(), 0);
+        assertEq(coordinator.confirmations(), 100);
+        assertEq(coordinator.timeoutBlocks(), 2400);
+        vm.prank(makeAddr("zero fee requester"));
+        bytes32 newId = coordinator.request(bytes32(0));
+        VRFCoordinator.Request memory fresh = coordinator.getRequest(newId);
+        assertEq(fresh.fee, 0);
+        assertEq(fresh.confirmations, 100);
+        assertEq(fresh.deadline, block.number + 2400);
+        VRFCoordinator.Request memory frozen = coordinator.getRequest(v.requestId);
+        assertEq(frozen.fee, 2e13);
+        assertEq(frozen.confirmations, 12);
+        assertEq(frozen.deadline, original.deadline);
+        fulfillAs(fulfiller, v);
+        assertEq(coordinator.payeeBalance(payee), 2e13, "payout uses stored fee despite current zero fee");
+        RequestVector memory refund = vector(1);
+        uint256 before = refund.requester.balance;
+        vm.roll(coordinator.getRequest(refund.requestId).deadline + 1);
+        coordinator.timeoutRefund(refund.requestId);
+        assertEq(refund.requester.balance, before + 2e13, "refund uses stored fee despite current zero fee");
+        vm.roll(fresh.deadline + 1);
+        coordinator.timeoutRefund(newId);
+        assertEq(uint8(coordinator.getRequest(newId).status), uint8(VRFCoordinator.Status.Refunded));
+    }
+
+    function test_OnlyOwnerSetsFeeAndTimingWithinBounds() public {
+        assertEq(coordinator.fee(), 2e13);
+        assertEq(coordinator.confirmations(), 12);
+        assertEq(coordinator.timeoutBlocks(), 1200);
+        address stranger = makeAddr("stranger");
+        vm.startPrank(stranger);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.setFeeConfig(0);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.setConfirmations(6);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.setTimeoutBlocks(600);
+        vm.stopPrank();
+        bytes32 feeParam = "fee";
+        bytes32 confirmationsParam = "confirmations";
+        bytes32 timeoutParam = "timeoutBlocks";
+        vm.startPrank(owner);
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, feeParam));
+        coordinator.setFeeConfig(uint256(type(uint96).max) + 1);
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, confirmationsParam));
+        coordinator.setConfirmations(5);
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, confirmationsParam));
+        coordinator.setConfirmations(101);
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, timeoutParam));
+        coordinator.setTimeoutBlocks(599);
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, timeoutParam));
+        coordinator.setTimeoutBlocks(2401);
+        coordinator.setFeeConfig(type(uint96).max);
+        coordinator.setConfirmations(6);
+        coordinator.setTimeoutBlocks(600);
+        vm.stopPrank();
+        assertEq(coordinator.fee(), type(uint96).max);
+        assertEq(coordinator.confirmations(), 6);
+        assertEq(coordinator.timeoutBlocks(), 600);
     }
 
     // --------------------------------------------------------------- admin
@@ -387,5 +648,49 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         VRFCoordinator.DrandConfig memory drand = coordinator.getDrandConfig(0);
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         implementation.initialize(owner, drand);
+    }
+}
+
+/// A Requester or Payee whose transfer behavior can reject or attempt both guarded calls.
+contract FeeReceiver {
+    VRFCoordinator internal immutable COORDINATOR;
+    bytes32 internal requestId;
+    bool internal reject;
+    bool internal reenter;
+    VRFCoordinator.Status public observedStatus;
+    bool public refundBlocked;
+    bool public withdrawalBlocked;
+
+    constructor(VRFCoordinator c) {
+        COORDINATOR = c;
+    }
+
+    function request() external payable returns (bytes32) {
+        requestId = COORDINATOR.request{value: msg.value}(bytes32(0));
+        return requestId;
+    }
+
+    function configure(bool reject_, bool reenter_, bytes32 id) external {
+        reject = reject_;
+        reenter = reenter_;
+        requestId = id;
+    }
+
+    function withdraw() external {
+        COORDINATOR.withdrawFees();
+    }
+
+    receive() external payable {
+        require(!reject, "reject transfer");
+        observedStatus = COORDINATOR.getRequest(requestId).status;
+        if (reenter) {
+            (bool refundOk, bytes memory refundError) =
+                address(COORDINATOR).call(abi.encodeCall(VRFCoordinator.timeoutRefund, (requestId)));
+            (bool withdrawOk, bytes memory withdrawError) =
+                address(COORDINATOR).call(abi.encodeCall(VRFCoordinator.withdrawFees, ()));
+            bytes32 guardError = keccak256(abi.encodeWithSignature("ReentrancyGuardReentrantCall()"));
+            refundBlocked = !refundOk && keccak256(refundError) == guardError;
+            withdrawalBlocked = !withdrawOk && keccak256(withdrawError) == guardError;
+        }
     }
 }
