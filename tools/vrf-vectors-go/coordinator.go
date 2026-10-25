@@ -37,7 +37,7 @@ const (
 	drandPeriod  = 3
 	// roundOffset is the coordinator's default Target Round offset.
 	roundOffset = 40
-	// chainID is Rootstock mainnet's; the vectors bind to it.
+	// chainID is Rootstock testnet's; the vectors bind to it.
 	chainID = 31
 )
 
