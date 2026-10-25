@@ -26,13 +26,28 @@ async function main() {
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  // Keys are loaded by keyHash as requests bound to them arrive, so a Draining key keeps serving after rotation.
+  // Every Active and Draining key loads at startup and again on KeyStateChanged,
+  // so a Draining key keeps serving after rotation.
   const secrets = new AwsSecretSource();
-  const loadProvingKey = async (keyHash: Hex) => { const parsed = parseKeyHash(keyHash); if (!parsed) throw new Error('Invalid key hash'); return ProvingKey.fromHex(await secrets.load(secretName(parsed))); };
+  const loadProvingKey = async (keyHash: Hex) => {
+    const parsed = parseKeyHash(keyHash);
+    if (!parsed) throw new Error('Invalid key hash');
+    let secret: string;
+    try {
+      secret = await secrets.load(secretName(parsed));
+    } catch (error) {
+      // A key this deployment does not hold is not an error.
+      if (error instanceof Error && error.name === 'ResourceNotFoundException') return undefined;
+      throw error;
+    }
+    return ProvingKey.fromHex(secret);
+  };
   const worker = createWorker({ rpcUrl, relayUrl, coordinator, chain, fromBlock, fulfillerPrivateKey, loadProvingKey });
   const stop = new AbortController();
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
+  // KeySync carries only keyIds, keyHashes and load-error messages, which never quote a secret.
+  for (const key of await worker.syncKeys()) process.stdout.write(`${JSON.stringify(key)}\n`);
   process.stdout.write(`worker: polling ${coordinator} from block ${fromBlock}\n`);
   while (!stop.signal.aborted) {
     try {

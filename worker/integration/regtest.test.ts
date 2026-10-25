@@ -3,12 +3,14 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { it } from 'node:test';
-import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseEventLogs, type Abi, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseAbi, parseEventLogs, type Abi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { coordinatorAbi } from '../src/coordinator.ts';
+import { coordinatorAbi as workerAbi } from '../src/coordinator.ts';
 import { createWorker } from '../src/worker.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 
+// The worker never revokes; only the tests act as the Admin here.
+const coordinatorAbi = [...workerAbi, ...parseAbi(['function revoke(bytes32 keyHash)'])];
 const rpcUrl = process.env.RSK_RPC_URL ?? 'http://127.0.0.1:4449';
 const chain = defineChain({ id: 33, name: 'Rootstock regtest', nativeCurrency: { name: 'Test RBTC', symbol: 'tRBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
 const client = createPublicClient({ chain, transport: http(rpcUrl), pollingInterval: 50 });
@@ -300,4 +302,47 @@ it('real rskj: revocation stops the worker and the pending request is refunded b
   } finally {
     await relay.stop();
   }
+});
+
+it('real rskj: the worker holds every Active and Draining key and follows KeyStateChanged', { timeout: 180_000 }, async () => {
+  const { coordinator, fromBlock } = await deployCoordinator();
+  const [first, second, third] = [ProvingKey.generate(), ProvingKey.generate(), ProvingKey.generate()];
+  await register(coordinator, first);
+  await register(coordinator, second);
+  const loads: Hex[] = [];
+  const store = keyStore(first, second, third);
+  const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', fromBlock,
+    loadProvingKey: async (keyHash) => {
+      loads.push(keyHash);
+      return store(keyHash);
+    } });
+  const held = (...keys: ProvingKey[]) => keys.map(k => k.keyHash).sort();
+
+  const startup = await worker.syncKeys();
+  assert.deepEqual(startup.map(k => [k.keyId, k.held]), [[1, true], [2, true]], 'Draining and Active keys load before any request');
+  assert.deepEqual(worker.heldKeys().sort(), held(first, second));
+
+  await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'revoke', args: [first.keyHash], gas: 200_000n, gasPrice: 1n }));
+  await worker.pollOnce();
+  assert.deepEqual(worker.heldKeys(), held(second), 'a Revoked key is evicted');
+
+  await register(coordinator, third);
+  await worker.pollOnce();
+  assert.deepEqual(worker.heldKeys().sort(), held(second, third), 'a newly Active key loads on KeyStateChanged');
+  assert.equal(loads.length, 3, 'held keys are not reloaded');
+});
+
+it('real rskj: a key the secret store lacks is reported as not held, and a load failure keeps its message', { timeout: 180_000 }, async () => {
+  const { coordinator, fromBlock } = await deployCoordinator();
+  const [missing, failing] = [ProvingKey.generate(), ProvingKey.generate()];
+  await register(coordinator, missing);
+  await register(coordinator, failing);
+  const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', fromBlock,
+    loadProvingKey: async (keyHash) => {
+      if (keyHash.toLowerCase() === failing.keyHash) throw new Error('AccessDeniedException');
+      return undefined;
+    } });
+  const synced = await worker.syncKeys();
+  assert.deepEqual(synced.map(k => [k.keyId, k.held, k.error]), [[1, false, undefined], [2, false, 'AccessDeniedException']]);
+  assert.deepEqual(worker.heldKeys(), []);
 });

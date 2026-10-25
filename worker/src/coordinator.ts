@@ -13,7 +13,6 @@ export const coordinatorAbi = parseAbi([
   'function getRequest(bytes32 requestId) view returns (Request)',
   'function getDrandConfig(uint8 drandConfigId) view returns (DrandConfig)',
   'function getProvingKey(uint32 keyId) view returns (bytes32 keyHash, address payee, uint8 state, uint48 drainingSince)',
-  'function revoke(bytes32 keyHash)',
   'function activeKeyId() view returns (uint32)',
   'function fulfill(bytes32 requestId, Proof proof, uint256[2] drandSignature)',
   'function request(bytes32 tag) payable returns (bytes32)',
@@ -28,7 +27,14 @@ export const coordinatorAbi = parseAbi([
   'event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)',
   'event Refunded(bytes32 indexed requestId, uint8 reason)',
   'event FeesWithdrawn(address indexed payee, uint256 amount)',
+  'event KeyStateChanged(uint32 keyId, uint8 state)',
 ]);
+
+/** The coordinator's KeyState ordinals. Retired is never stored; getProvingKey derives it. */
+export const KeyState = { None: 0, Active: 1, Draining: 2, Revoked: 3, Retired: 4 } as const;
+
+/** servesKey: only Active and Draining keys may fulfill. */
+export const servesKey = (state: number) => state === KeyState.Active || state === KeyState.Draining;
 
 const DOMAIN_ALPHA = keccak256(stringToHex('rsk-vrf/v1/alpha'));
 const DOMAIN_BETA = keccak256(stringToHex('rsk-vrf/v1/beta'));
