@@ -16,6 +16,7 @@ remappings = [
 fs_permissions = [
     { access = "read", path = "../tools/vrf-vectors-go/vrf-proofs.json" },
     { access = "read", path = "../tools/vrf-vectors-go/coordinator-vectors.json" },
+    { access = "read", path = "./test/fixtures/evmnet-rounds.json" },
 ]
 
 [fmt]
