@@ -144,6 +144,20 @@ def extract():
     for i, (namespace, _, _, _, location) in enumerate(namespaces):
         field = next(m for m in layout['storage'] if m['label'] == f'namespace_{i}')
         result['namespaces'][namespace] = {'location': location, 'type': describe(field['type'])}
+    # Namespace identifiers do not prevent accessors from targeting the same
+    # physical slots. Include every occupied root slot, not just the first one.
+    ranges = []
+    for namespace, entry in result['namespaces'].items():
+        location = entry['location']
+        start = int(location, 16) if location.startswith('0x') else int(location)
+        end = start + (int(entry['type']['bytes']) + 31) // 32
+        if start < 0 or start >= 2**256 or end > 2**256:
+            raise ValueError(f'{namespace}: namespace storage range exceeds uint256')
+        ranges.append((start, end, namespace))
+    ranges.sort()
+    for before, after in zip(ranges, ranges[1:]):
+        if after[0] < before[1]:
+            raise ValueError(f'Namespace storage ranges overlap: {before[2]} and {after[2]}')
     # Unnamespaced state in the coordinator or a base must also be retained.
     ordinary = json.loads((CONTRACTS / 'out/VRFCoordinator.sol/VRFCoordinator.json').read_text())['storageLayout']
     if ordinary['storage']:
