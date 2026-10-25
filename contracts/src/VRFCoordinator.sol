@@ -362,6 +362,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         if (block.number < uint256(r.requestBlock) + r.confirmations) revert TooEarly();
         if (block.number > r.deadline) revert DeadlinePassed();
         ProvingKey storage key = $.keys[r.keyId];
+        // Raw stored state suffices: a Retired key is past every Deadline, checked above.
         if (key.state == KeyState.Revoked) revert KeyRevoked();
         if (keccak256(abi.encode(proof.pk)) != key.keyHash) revert WrongProvingKey();
 
@@ -415,7 +416,9 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         Status status = r.status;
         if (status == Status.None) revert UnknownRequest();
         if (status != Status.Pending) revert RequestNotPending(status);
-        RefundReason reason;
+        // Raw stored state suffices: a Retired key is past every Deadline, so it refunds
+        // on the Deadline branch like a Draining one.
+        RefundReason reason = RefundReason.Deadline;
         if ($.keys[r.keyId].state == KeyState.Revoked) reason = RefundReason.KeyRevoked;
         else if (block.number <= r.deadline) revert NotRefundableYet();
         r.status = Status.Refunded;
