@@ -139,6 +139,8 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         );
         deployCodeTo("ERC1967Proxy.sol:ERC1967Proxy", abi.encode(address(implementation), init), v0.coordinator);
         coordinator = VRFCoordinator(v0.coordinator);
+        vm.prank(owner);
+        coordinator.setFeeConfig(0);
     }
 
     // ---------------------------------------------------------------- helpers
@@ -164,6 +166,7 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
     }
 
     function fulfillAs(address who, RequestVector memory v) internal {
+        vm.roll(block.number + 12);
         vm.prank(who, who);
         coordinator.fulfill(v.requestId, v.proof, v.drandSignature);
     }
