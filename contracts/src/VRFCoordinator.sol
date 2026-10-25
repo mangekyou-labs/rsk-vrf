@@ -345,9 +345,10 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
 
     function _deliverCallback(bytes32 requestId, address requester, bytes32 beta, uint32 cap) private {
         bytes memory data = abi.encodeWithSignature("onRandomness(bytes32,bytes32)", requestId, beta);
-        // Check after effects and encoding so the reserve covers only the call and
-        // outcome event. A revert here rolls back the entire fulfillment.
-        if (gasleft() < uint256(cap) + CALLBACK_RESERVE) revert InsufficientGasForCallback();
+        // EIP-150 retains 1/64 of available gas. Include that headroom as well as
+        // the reserve for call overhead and the outcome event so the full cap is
+        // forwarded. A revert here rolls back the entire fulfillment.
+        if (gasleft() < uint256(cap) + uint256(cap) / 63 + CALLBACK_RESERVE) revert InsufficientGasForCallback();
         bool success;
         assembly ("memory-safe") {
             success := call(cap, requester, 0, add(data, 32), mload(data), 0, 0)

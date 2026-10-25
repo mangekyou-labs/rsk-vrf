@@ -351,4 +351,31 @@ contract VRFAdminTest is CoordinatorVectorFixture {
         coordinator.initializeAdminParameters();
         assertEq(coordinator.fee(), 2e13);
     }
+
+    function test_MaxCallbackCapIsFullyForwardedAtMinimumSuccessfulFulfillGas() public {
+        RequestVector memory v = vector(0);
+        vm.etch(v.requester, address(new RecordingRequester()).code);
+        vm.startPrank(owner);
+        coordinator.registerProvingKey(v.proof.pk, owner);
+        coordinator.setFeeConfig(0);
+        coordinator.setCallbackGasCap(2_500_000);
+        vm.stopPrank();
+        vm.prank(v.requester);
+        coordinator.requestWithCallback(v.tag);
+        vm.roll(block.number + 12);
+        bytes memory data = abi.encodeCall(VRFCoordinator.fulfill, (v.requestId, v.proof, v.drandSignature));
+        // Find the first accepted gas limit. Reverted attempts leave the request
+        // pending; acceptance must deliver the full frozen cap, even near EIP-150's limit.
+        for (uint256 limit = 2_500_000; limit <= 3_500_000; limit += 5_000) {
+            vm.prank(stranger, stranger);
+            (bool success,) = address(coordinator).call{gas: limit}(data);
+            if (success) {
+                assertEq(RecordingRequester(v.requester).beta(), v.beta);
+                assertGt(RecordingRequester(v.requester).entryGas(), 2_499_000);
+                assertLe(RecordingRequester(v.requester).entryGas(), 2_500_000);
+                return;
+            }
+        }
+        fail("no successful fulfillment within gas search range");
+    }
 }
