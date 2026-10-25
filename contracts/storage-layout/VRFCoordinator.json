@@ -292,8 +292,20 @@
                       "variants": [
                         "None",
                         "Active",
-                        "Draining"
+                        "Draining",
+                        "Revoked",
+                        "Retired"
                       ]
+                    }
+                  },
+                  {
+                    "label": "drainingSince",
+                    "offset": 21,
+                    "slot": "1",
+                    "type": {
+                      "bytes": "6",
+                      "encoding": "inplace",
+                      "label": "uint48"
                     }
                   }
                 ]
