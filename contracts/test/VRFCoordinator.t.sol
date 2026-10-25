@@ -283,6 +283,22 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
 
     // ------------------------------------------------------------- request
 
+    function test_RequestBeforeDrandGenesisRejectsWithDomainError() public {
+        registerGoldenKey();
+        vm.warp(drandGenesis() - 1);
+        // The 12-byte parameter label fits in bytes32.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        vm.expectRevert(abi.encodeWithSelector(VRFCoordinator.ValueOutOfBounds.selector, bytes32("drandGenesis")));
+        coordinator.request(bytes32(0));
+    }
+
+    function test_RequestAtDrandGenesisBindsFutureRound() public {
+        registerGoldenKey();
+        vm.warp(drandGenesis());
+        bytes32 requestId = coordinator.request(bytes32(0));
+        assertEq(coordinator.getRequest(requestId).targetRound, 41);
+    }
+
     function test_RequestRequiresAnActiveKey() public {
         vm.expectRevert(VRFCoordinator.NoActiveKey.selector);
         requestAs(vector(0));

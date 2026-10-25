@@ -15,6 +15,7 @@ abstract contract VRFVectorFixture is Test {
         uint256 hashToCurveTries;
         uint256[2] hash;
         VRF.Proof proof;
+        bytes proofBytes;
         uint256 output;
     }
 
@@ -42,6 +43,7 @@ abstract contract VRFVectorFixture is Test {
         v.hashToCurveTries = vm.parseJsonUint(json, string.concat(at, ".hashToCurveTries"));
         v.hash = point(string.concat(at, ".hash"));
         v.output = vm.parseJsonUint(json, string.concat(at, ".output"));
+        v.proofBytes = vm.parseJsonBytes(json, string.concat(at, ".proofBytes"));
         v.proof.pk = point(string.concat(proofAt, ".pk"));
         v.proof.gamma = point(string.concat(proofAt, ".gamma"));
         v.proof.c = vm.parseJsonUint(json, string.concat(proofAt, ".c"));
@@ -89,6 +91,15 @@ contract VRFVectorsTest is VRFVectorFixture {
         for (uint256 i; i < n; i++) {
             Vector memory v = vector(i);
             assertEq(vrf.randomValueFromVRFProof(v.proof, v.proof.seed), v.output, v.name);
+        }
+    }
+
+    /// proofBytes is what the worker submits, so it must be abi.encode of the proof.
+    function test_ProofBytesAreTheAbiEncodedProof() public view {
+        uint256 n = vectorCount();
+        for (uint256 i; i < n; i++) {
+            Vector memory v = vector(i);
+            assertEq(v.proofBytes, abi.encode(v.proof), v.name);
         }
     }
 }

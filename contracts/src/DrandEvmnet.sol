@@ -23,7 +23,11 @@ library DrandEvmnet {
         return pairingSuccess && callSuccess;
     }
 
-    /// @notice The round's randomness, sha256 of the signature's x || y, as drand derives it.
+    /// @notice The round's randomness, sha256 of the canonical 64-byte signature.
+    /// @dev drand/kyber pairing/bn254 pointG1.MarshalBinary serializes uncompressed
+    ///   x || y (32 bytes each), and drand RandomnessFromSignature hashes those bytes.
+    ///   https://github.com/drand/kyber/blob/master/pairing/bn254/point.go
+    ///   https://github.com/drand/drand/blob/master/crypto/schemes.go
     function randomness(uint256[2] memory signature) internal pure returns (bytes32) {
         return sha256(abi.encodePacked(signature[0], signature[1]));
     }

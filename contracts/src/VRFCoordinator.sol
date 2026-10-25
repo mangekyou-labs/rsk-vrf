@@ -161,6 +161,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
 
         uint8 drandConfigId = uint8($.drandConfigs.length - 1);
         DrandConfig storage drand = $.drandConfigs[drandConfigId];
+        if (block.timestamp < drand.genesis) revert ValueOutOfBounds("drandGenesis");
         uint64 targetRound = uint64((block.timestamp - drand.genesis) / drand.period + 1 + $.roundOffset);
         uint48 requestBlock = uint48(block.number);
         uint48 deadline = requestBlock + DEFAULT_TIMEOUT_BLOCKS;
