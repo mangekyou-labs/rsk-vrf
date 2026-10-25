@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { describe, it } from 'node:test';
-import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
@@ -88,6 +88,36 @@ function pinOf(beacon: { publicKey: bigint[]; genesis: bigint; period: bigint })
   const [a, b, c, d] = beacon.publicKey;
   assert.ok(a !== undefined && b !== undefined && c !== undefined && d !== undefined);
   return { publicKey: [a, b, c, d], genesis: beacon.genesis, period: beacon.period };
+}
+
+function countingFetch(bucket: { n: number }): typeof fetch {
+  return async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes('/public/')) bucket.n += 1;
+    return fetch(input, init);
+  };
+}
+
+function quotedQuantity(value: unknown): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return BigInt(Math.trunc(value));
+  if (typeof value === 'string' && value !== '' && value !== '0x') {
+    try { return BigInt(value); } catch { return 0n; }
+  }
+  return 0n;
+}
+
+/** Same 1.1× quote the worker uses, computed from the chain rather than a worker helper. */
+async function quotedStart(): Promise<{ price: bigint; cap: bigint | null; minimum: bigint }> {
+  const network = await client.getGasPrice();
+  const block: unknown = await client.request({ method: 'eth_getBlockByNumber' as never, params: ['latest', false] as never });
+  const minimum = block != null && typeof block === 'object' && 'minimumGasPrice' in block ? quotedQuantity(block.minimumGasPrice) : 0n;
+  const cap = minimum > 0n ? 80n * minimum - 1n : null;
+  let price = network > minimum ? network : minimum;
+  price = (price * 11n) / 10n;
+  if (cap != null && price > cap) price = cap;
+  if (price === 0n) price = 1n;
+  return { price, cap, minimum };
 }
 
 function listen(server: Server): Promise<string> {
@@ -410,6 +440,206 @@ describe('worker regtest', { concurrency: 1 }, () => {
         assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs }).length, 1);
       } finally {
         await Promise.all(servers.map(closeServer));
+      }
+    });
+  });
+
+  it('sends at most eight legacy fulfills, earliest chain deadline first', { timeout: 300_000 }, async () => {
+    await withRelay(18775, async relayUrl => {
+      await fund([requester, fulfiller]);
+      const { coordinator, key, beacon } = await deployCoordinator();
+      const made: { requestId: Hex }[] = [];
+      for (let i = 0; i < 9; i++) {
+        if (i > 0) await mine();
+        const tag = `0x${(i + 1).toString(16).padStart(64, '0')}` as Hex;
+        const { requestId } = await requestRandomness(coordinator, tag);
+        made.push({ requestId });
+      }
+      const lastId = made[8]?.requestId;
+      assert.ok(lastId);
+      const lastRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [lastId] });
+      await mineBlocks(Number(lastRecord.confirmations));
+      let now = 0n;
+      for (const item of made) {
+        const record = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [item.requestId] });
+        const roundTime = beacon.genesis + (record.targetRound - 1n) * beacon.period;
+        if (roundTime > now) now = roundTime;
+      }
+      const bucket = { n: 0 };
+      const before = await nonceOf(fulfiller.address);
+      const quote = await quotedStart();
+      assert.equal(quote.cap, quote.minimum > 0n ? 80n * quote.minimum - 1n : null);
+      const worker = createWorker({
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+        relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
+      });
+      const results = await worker.pollOnce();
+      assert.equal(results.length, 9);
+      assert.equal(bucket.n, 8);
+      const submitted = results.filter(item => item.status === 'submitted');
+      const waiting = results.filter(item => item.status === 'waiting');
+      assert.equal(submitted.length, 8);
+      assert.equal(waiting.length, 1);
+      assert.equal(await nonceOf(fulfiller.address), before + 8);
+      const ranked: { requestId: Hex; deadline: bigint }[] = [];
+      for (const item of made) {
+        const live = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [item.requestId] });
+        ranked.push({ requestId: item.requestId, deadline: BigInt(live.deadline) });
+      }
+      ranked.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
+      for (let i = 1; i < ranked.length; i++) assert.ok(ranked[i]!.deadline > ranked[i - 1]!.deadline);
+      const latestId = ranked[8]!.requestId;
+      assert.equal(forRequest(results, latestId)?.status, 'waiting');
+      assert.equal(forRequest(results, latestId)?.transactionHash, undefined);
+      const earliest = ranked.slice(0, 8).map(item => item.requestId.toLowerCase());
+      const observed: { nonce: number; requestId: string }[] = [];
+      for (const item of submitted) {
+        assert.ok(item.transactionHash);
+        const tx = await client.getTransaction({ hash: item.transactionHash });
+        assert.equal(tx.type, 'legacy');
+        if (tx.type !== 'legacy') assert.fail('fulfillment is a legacy transaction');
+        assert.equal(tx.gas, 507_000n);
+        assert.equal(tx.gasPrice, quote.price);
+        const decoded = decodeFunctionData({ abi: coordinatorAbi, data: tx.input });
+        assert.equal(decoded.functionName, 'fulfill');
+        const args = decoded.args as readonly unknown[] | undefined;
+        const first = args?.[0];
+        assert.equal(typeof first, 'string');
+        observed.push({ nonce: tx.nonce, requestId: String(first).toLowerCase() });
+      }
+      observed.sort((a, b) => a.nonce - b.nonce);
+      for (let i = 0; i < 8; i++) {
+        assert.equal(observed[i]!.nonce, before + i);
+        assert.equal(observed[i]!.requestId, earliest[i]);
+      }
+      await mine();
+    });
+  });
+
+  it('sends nothing below the cost of twenty fulfills and resumes at equality for the earlier deadline', { timeout: 300_000 }, async () => {
+    await withRelay(18776, async relayUrl => {
+      const poorKey = `0x${'78'.repeat(32)}` as Hex;
+      const poor = privateKeyToAccount(poorKey);
+      const poorWallet = createWalletClient({ account: poor, chain, transport: http(rpcUrl) });
+      const fee = 21_000n * 1n;
+      await fund([requester]);
+      const { coordinator, key, beacon } = await deployCoordinator();
+      const first = await requestRandomness(coordinator, `0x${'11'.repeat(32)}`);
+      await mine();
+      const second = await requestRandomness(coordinator, `0x${'22'.repeat(32)}`);
+      await mineBlocks(Number(second.record.confirmations));
+      const balanceOf = () => client.getBalance({ address: poor.address });
+      let quote = await quotedStart();
+      let cost = 20n * 507_000n * quote.price;
+      let balance = await balanceOf();
+      if (balance >= cost && balance > fee + 1n) {
+        const target = cost - 1n;
+        const value = balance > target + fee ? balance - target - fee : 1n;
+        await receipt(await poorWallet.sendTransaction({ to: poor.address, value, gas: 21_000n, gasPrice: 1n }));
+      }
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      balance = await balanceOf();
+      if (balance < cost - 1n) {
+        await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - 1n - balance, gas: 21_000n, gasPrice: 1n }));
+      }
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      balance = await balanceOf();
+      if (balance >= cost && balance > fee + 1n) {
+        await receipt(await poorWallet.sendTransaction({ to: poor.address, value: 1n, gas: 21_000n, gasPrice: 1n }));
+      }
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      assert.ok(await balanceOf() < cost);
+      const firstRound = beacon.genesis + (first.record.targetRound - 1n) * beacon.period;
+      const secondRound = beacon.genesis + (second.record.targetRound - 1n) * beacon.period;
+      const now = firstRound > secondRound ? firstRound : secondRound;
+      const bucket = { n: 0 };
+      const worker = createWorker({
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: poorKey, provingKey: key,
+        relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
+      });
+      const before = await nonceOf(poor.address);
+      const under = await worker.pollOnce();
+      assert.equal(bucket.n, 0);
+      assert.equal(forRequest(under, first.requestId)?.status, 'waiting');
+      assert.equal(forRequest(under, second.requestId)?.status, 'waiting');
+      assert.equal(forRequest(under, first.requestId)?.transactionHash, undefined);
+      assert.equal(await nonceOf(poor.address), before);
+      assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [first.requestId] })).status, 1);
+      assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [second.requestId] })).status, 1);
+      const refunds = await client.getLogs({ address: coordinator, event: parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)'), fromBlock: first.requestReceipt.blockNumber, toBlock: await head(), strict: true });
+      assert.equal(refunds.length, 0);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        quote = await quotedStart();
+        cost = 20n * 507_000n * quote.price;
+        balance = await balanceOf();
+        if (balance < cost) await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - balance, gas: 21_000n, gasPrice: 1n }));
+      }
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      balance = await balanceOf();
+      const oneFulfillment = 507_000n * quote.price;
+      if (balance >= cost + oneFulfillment && balance > cost + fee) {
+        await receipt(await poorWallet.sendTransaction({ to: poor.address, value: balance - cost - fee, gas: 21_000n, gasPrice: 1n }));
+      }
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      const window = 507_000n * quote.price;
+      balance = await balanceOf();
+      assert.ok(balance >= cost && balance < cost + window);
+      bucket.n = 0;
+      const beforeSend = await nonceOf(poor.address);
+      const sent = await worker.pollOnce();
+      const liveFirst = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [first.requestId] });
+      const liveSecond = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [second.requestId] });
+      const earlier = BigInt(liveFirst.deadline) < BigInt(liveSecond.deadline) ? first.requestId : second.requestId;
+      const later = earlier === first.requestId ? second.requestId : first.requestId;
+      assert.equal(forRequest(sent, earlier)?.status, 'submitted');
+      assert.equal(forRequest(sent, later)?.status, 'waiting');
+      assert.equal(bucket.n, 1);
+      assert.equal(await nonceOf(poor.address), beforeSend + 1);
+      const hash = forRequest(sent, earlier)?.transactionHash;
+      assert.ok(hash);
+      const tx = await client.getTransaction({ hash });
+      assert.equal(tx.type, 'legacy');
+      if (tx.type !== 'legacy') assert.fail('fulfillment is a legacy transaction');
+      assert.equal(tx.gas, 507_000n);
+      assert.equal(tx.gasPrice, quote.price);
+      assert.equal(tx.from.toLowerCase(), poor.address.toLowerCase());
+      const fulfilledReceipt = await receipt(hash);
+      const after = await balanceOf();
+      quote = await quotedStart();
+      cost = 20n * 507_000n * quote.price;
+      if (after < cost) {
+        bucket.n = 0;
+        const heldNonce = await nonceOf(poor.address);
+        const held = await worker.pollOnce();
+        assert.equal(forRequest(held, later)?.status, 'waiting');
+        assert.equal(forRequest(held, later)?.transactionHash, undefined);
+        assert.equal(bucket.n, 0);
+        assert.equal(await nonceOf(poor.address), heldNonce);
+        assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [later] })).status, 1);
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        quote = await quotedStart();
+        cost = 20n * 507_000n * quote.price;
+        balance = await balanceOf();
+        if (balance < cost) await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - balance, gas: 21_000n, gasPrice: 1n }));
+      }
+      assert.ok(await balanceOf() >= 20n * 507_000n * (await quotedStart()).price);
+      bucket.n = 0;
+      const resumed = await worker.pollOnce();
+      assert.equal(forRequest(resumed, later)?.status, 'submitted');
+      const laterHash = forRequest(resumed, later)?.transactionHash;
+      assert.ok(laterHash);
+      const laterReceipt = await receipt(laterHash);
+      assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [later] })).status, 2);
+      for (const mined of [fulfilledReceipt, laterReceipt]) {
+        const logs = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: mined.logs });
+        assert.equal(logs.length, 1);
+        assert.equal(logs[0]?.args.fulfiller.toLowerCase(), poor.address.toLowerCase());
       }
     });
   });
