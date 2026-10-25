@@ -73,7 +73,7 @@
     "rsk-vrf.storage.VRFCoordinator": {
       "location": "0x93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900",
       "type": {
-        "bytes": "192",
+        "bytes": "224",
         "encoding": "inplace",
         "label": "struct VRFCoordinator.CoordinatorStorage",
         "members": [
@@ -392,6 +392,46 @@
               "bytes": "32",
               "encoding": "dynamic_array",
               "label": "struct VRFCoordinator.DrandConfig[]"
+            }
+          },
+          {
+            "label": "fee",
+            "offset": 0,
+            "slot": "6",
+            "type": {
+              "bytes": "12",
+              "encoding": "inplace",
+              "label": "uint96"
+            }
+          },
+          {
+            "label": "callbackGasCap",
+            "offset": 12,
+            "slot": "6",
+            "type": {
+              "bytes": "4",
+              "encoding": "inplace",
+              "label": "uint32"
+            }
+          },
+          {
+            "label": "timeoutBlocks",
+            "offset": 16,
+            "slot": "6",
+            "type": {
+              "bytes": "6",
+              "encoding": "inplace",
+              "label": "uint48"
+            }
+          },
+          {
+            "label": "confirmations",
+            "offset": 22,
+            "slot": "6",
+            "type": {
+              "bytes": "2",
+              "encoding": "inplace",
+              "label": "uint16"
             }
           }
         ]
