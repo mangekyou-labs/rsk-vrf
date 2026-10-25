@@ -6,14 +6,15 @@ Node 24+, `npm ci`, `npm run typecheck`, `npm test`.
 
 - `RSK_RPC_URL`: Rootstock JSON-RPC endpoint.
 - `COORDINATOR_ADDRESS`: deployed coordinator proxy.
-- `DRAND_RELAY_URL`: drand relay base URL exposing `/public/<round>` (the beacon must match the coordinator's frozen config).
-- `FROM_BLOCK`: first block to scan, inclusive. Use the deployment block for a new process.
+- `DRAND_RELAY_URLS`: comma-separated relay base URLs tried in order. The first well-formed `/public/<round>` wins. `DRAND_RELAY_URL` sets one relay. With neither set, the process uses `https://api.drand.sh`, `https://api2.drand.sh`, and `https://api3.drand.sh`.
+- `DRAND_PIN_PUBLIC_KEY`, `DRAND_PIN_GENESIS`, `DRAND_PIN_PERIOD`: required pin of the frozen beacon. A mismatch is reported once and that config is not served.
+- `GRACE_BLOCKS`: blocks after the request's confirmations. Unset or empty is `0` (primary). A backup uses `100`.
 - `FULFILLER_PRIVATE_KEY`: funded Fulfiller EOA's 0x-prefixed key, supplied through the process environment. It is removed from `process.env` after loading. Production signing custody is a later ticket.
 - `PROVING_KEY_HASH` (optional): serve this registered key, including a Draining Key. Defaults to the Active Key at startup.
 
-The Proving Key loads into memory from AWS Secrets Manager at `rsk-vrf/proving-key/<keyHash>`, using the AWS credential provider chain. Use `worker keygen` and `worker check-key <keyHash>` for provisioning and verification. The worker logs only public request outcomes. It reads each queued request and its frozen drand config at `latest`, waits for confirmations and the Target Round, creates the noble proof, simulates `fulfill` as the Fulfiller EOA, and sends the simulated transaction only if simulation succeeds. Failed relay calls and simulations remain queued for the next poll (10 seconds).
+The Proving Key loads into memory from AWS Secrets Manager at `rsk-vrf/proving-key/<keyHash>`, using the AWS credential provider chain. Use `worker keygen` and `worker check-key <keyHash>` for provisioning and verification. The worker logs only public request outcomes. Each poll scans `latest − 2,400 − 100`, keeps an id until Fulfilled or Refunded is `confirmations` deep, and does not delete or send on deadline. It never refunds. It waits for confirmations, grace, and the pinned round, simulates `fulfill`, and sends a legacy transaction only when simulation succeeds. At most eight fulfills stay in flight, earliest deadline first, from 1.1× the quoted gas price up to `80 × minimumGasPrice − 1`. Below the cost of twenty fulfills it sends nothing. A missing nonce is rebroadcast or filled with a self-transfer. A beacon still down 30 seconds after the round is reported once; the id stays pending. Failed simulations wait for the next poll (10 seconds).
 
-This tracer holds its cursor and pending IDs in memory. Run one instance per key and choose `FROM_BLOCK` explicitly on restart. Durable cursors, reorg handling, replacement transactions and relay failover are tracked in #35.
+Pending ids live in memory and are rediscovered from the chain. Run one primary per key, and optionally the same binary as a backup with `GRACE_BLOCKS=100` and its own Fulfiller. Reorg recovery, and replacement of a transaction a mined block omits, were not shown on the pinned regtest node.
 
 ## Offline full loop
 
