@@ -33,8 +33,16 @@ function relayUrls(): string[] {
   return raw.map(item => new URL(item.trim()).toString().replace(/\/$/, ''));
 }
 
+function graceBlocks(): number {
+  const raw = process.env.GRACE_BLOCKS;
+  if (raw === undefined || raw === '') return 0;
+  if (!/^\d+$/.test(raw)) throw new Error('Invalid grace');
+  return Number(raw);
+}
+
 async function main() {
   const pin = drandPin();
+  const grace = graceBlocks();
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
   const coordinator = getAddress(required('COORDINATOR_ADDRESS').toLowerCase());
@@ -56,7 +64,7 @@ async function main() {
   const provingKey = ProvingKey.fromHex(await new AwsSecretSource().load(secretName(keyHash)));
   if (provingKey.keyHash !== keyHash) throw new Error('Proving Key mismatch');
   const worker = createWorker({
-    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, provingKey, drandPin: pin,
+    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, provingKey, drandPin: pin, graceBlocks: grace,
     report: line => process.stderr.write(`${line}\n`),
   });
   const stop = new AbortController();

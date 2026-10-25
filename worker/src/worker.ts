@@ -25,6 +25,8 @@ export interface WorkerConfig {
   relayUrls?: readonly string[];
   /** Ignored. Each poll scans `latest − 2,400 − 100` itself. */
   fromBlock?: bigint;
+  /** Blocks after the request's confirmations before a fulfill. Primary is 0; backup is 100. */
+  graceBlocks?: number;
   nowSeconds?: () => bigint;
   fetch?: typeof globalThis.fetch;
   /** Operator line. Defaults to stderr. Must not receive key material. */
@@ -503,7 +505,8 @@ export function createWorker(config: WorkerConfig) {
             continue;
           }
           const confirmations = BigInt(request.confirmations);
-          if (latest < BigInt(request.requestBlock) + confirmations) {
+          const grace = BigInt(config.graceBlocks ?? 0);
+          if (latest < BigInt(request.requestBlock) + confirmations + grace) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }

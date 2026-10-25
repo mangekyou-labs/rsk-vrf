@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { describe, it } from 'node:test';
-import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
+import { BaseError, ContractFunctionRevertedError, createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
@@ -25,6 +25,12 @@ const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, 
 
 async function mine() { await client.request({ method: 'evm_mine' as never, params: [] as never }); }
 async function mineBlocks(count: number) { for (let n = 0; n < count; n++) await mine(); }
+async function mineTo(block: bigint) {
+  const current = await head();
+  assert.ok(current <= block, 'head is already past the target block');
+  await mineBlocks(Number(block - current));
+  assert.equal(await head(), block);
+}
 async function receipt(hash: Hex) { await mine(); const found = await client.waitForTransactionReceipt({ hash }); assert.equal(found.status, 'success'); return found; }
 async function head() { return client.getBlockNumber({ cacheTime: 0 }); }
 async function nonceOf(address: Address) { return client.getTransactionCount({ address, blockTag: 'pending' }); }
@@ -641,6 +647,133 @@ describe('worker regtest', { concurrency: 1 }, () => {
         assert.equal(logs.length, 1);
         assert.equal(logs[0]?.args.fulfiller.toLowerCase(), poor.address.toLowerCase());
       }
+    });
+  });
+
+  it('backup with grace 100 does not submit until requestBlock + confirmations + 100', { timeout: 300_000 }, async () => {
+    await withRelay(18777, async relayUrl => {
+      const backupKey = `0x${'9a'.repeat(32)}` as Hex;
+      const backup = privateKeyToAccount(backupKey);
+      await fund([requester, backup]);
+      const { coordinator, key, beacon } = await deployCoordinator();
+      const { requestId, record } = await requestRandomness(coordinator, `0x${'44'.repeat(32)}`);
+      assert.equal(record.confirmations, 12);
+      const bucket = { n: 0 };
+      const worker = createWorker({
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, provingKey: key, relayUrl,
+        drandPin: pinOf(beacon), graceBlocks: 100, fetch: countingFetch(bucket),
+        nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
+      });
+      const eligible = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
+      await mineTo(eligible - 1n);
+      const before = await nonceOf(backup.address);
+      bucket.n = 0;
+      const early = await worker.pollOnce();
+      assert.equal(forRequest(early, requestId)?.status, 'waiting');
+      assert.equal(forRequest(early, requestId)?.transactionHash, undefined);
+      assert.equal(bucket.n, 0);
+      assert.equal(await nonceOf(backup.address), before);
+      assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] })).status, 1);
+      await mine();
+      assert.equal(await head(), eligible);
+      const submitted = await worker.pollOnce();
+      assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
+      const hash = forRequest(submitted, requestId)?.transactionHash;
+      assert.ok(hash);
+      const fulfilledReceipt = await receipt(hash);
+      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const expectedUrl = new URL(`${relayUrl}/expected`);
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
+      const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+      assert.equal(finalRecord.status, 2);
+      assert.equal(finalRecord.beta, expected.beta);
+      const logs = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs });
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0]?.args.fulfiller.toLowerCase(), backup.address.toLowerCase());
+      assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: fulfilledReceipt.logs }).length, 0);
+    });
+  });
+
+  it('primary and backup both broadcast once and exactly one fulfillment lands', { timeout: 300_000 }, async () => {
+    await withRelay(18778, async relayUrl => {
+      const primaryKey = `0x${'9a'.repeat(32)}` as Hex;
+      const backupKey = `0x${'bc'.repeat(32)}` as Hex;
+      const primary = privateKeyToAccount(primaryKey);
+      const backup = privateKeyToAccount(backupKey);
+      await fund([requester, primary, backup]);
+      const { coordinator, key, beacon } = await deployCoordinator();
+      const { requestId, record } = await requestRandomness(coordinator, `0x${'55'.repeat(32)}`);
+      assert.equal(record.confirmations, 12);
+      const primaryHits = { n: 0 };
+      const backupHits = { n: 0 };
+      const shared = {
+        rpcUrl, coordinator, chain, provingKey: key, relayUrl, drandPin: pinOf(beacon),
+        nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
+      };
+      const primaryWorker = createWorker({ ...shared, fulfillerPrivateKey: primaryKey, graceBlocks: 0, fetch: countingFetch(primaryHits) });
+      const backupWorker = createWorker({ ...shared, fulfillerPrivateKey: backupKey, graceBlocks: 100, fetch: countingFetch(backupHits) });
+      const eligible = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
+      await mineTo(eligible);
+      const primaryBefore = await nonceOf(primary.address);
+      const backupBefore = await nonceOf(backup.address);
+      const primaryResults = await primaryWorker.pollOnce();
+      const backupResults = await backupWorker.pollOnce();
+      assert.equal(forRequest(primaryResults, requestId)?.status, 'submitted');
+      assert.equal(forRequest(backupResults, requestId)?.status, 'submitted');
+      const primaryHash = forRequest(primaryResults, requestId)?.transactionHash;
+      const backupHash = forRequest(backupResults, requestId)?.transactionHash;
+      assert.ok(primaryHash);
+      assert.ok(backupHash);
+      assert.equal(primaryHits.n, 1);
+      assert.equal(backupHits.n, 1);
+      assert.equal(await nonceOf(primary.address), primaryBefore + 1);
+      assert.equal(await nonceOf(backup.address), backupBefore + 1);
+      await mine();
+      const receipts = await Promise.all([primaryHash, backupHash].map(hash => client.waitForTransactionReceipt({ hash })));
+      const success = receipts.filter(item => item.status === 'success');
+      const reverted = receipts.filter(item => item.status === 'reverted');
+      assert.equal(success.length, 1);
+      assert.equal(reverted.length, 1);
+      const fulfilled = receipts.flatMap(item => parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: item.logs }));
+      assert.equal(fulfilled.length, 1);
+      const winner = fulfilled[0]?.args.fulfiller.toLowerCase();
+      assert.ok(winner === primary.address.toLowerCase() || winner === backup.address.toLowerCase());
+      assert.equal(receipts.flatMap(item => parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: item.logs })).length, 0);
+      const revertedHash = reverted[0]?.transactionHash;
+      assert.ok(revertedHash);
+      const tx = await client.getTransaction({ hash: revertedHash });
+      const decoded = decodeFunctionData({ abi: coordinatorAbi, data: tx.input });
+      assert.equal(decoded.functionName, 'fulfill');
+      const abi = [...coordinatorAbi, parseAbiItem('error RequestNotPending(uint8 status)')];
+      await assert.rejects(() => client.simulateContract({
+        address: coordinator, abi, functionName: 'fulfill', args: decoded.args as never, account: tx.from, blockNumber: reverted[0]!.blockNumber,
+      }), (error: unknown) => {
+        assert.ok(error instanceof BaseError);
+        const cause = error.walk(item => item instanceof ContractFunctionRevertedError);
+        assert.ok(cause instanceof ContractFunctionRevertedError);
+        assert.equal(cause.data?.errorName, 'RequestNotPending');
+        return true;
+      });
+      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const expectedUrl = new URL(`${relayUrl}/expected`);
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
+      const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+      assert.equal(finalRecord.status, 2);
+      assert.equal(finalRecord.beta, expected.beta);
+      primaryHits.n = 0;
+      backupHits.n = 0;
+      const laterPrimary = await primaryWorker.pollOnce();
+      const laterBackup = await backupWorker.pollOnce();
+      assert.equal(forRequest(laterPrimary, requestId)?.status, 'waiting');
+      assert.equal(forRequest(laterBackup, requestId)?.status, 'waiting');
+      assert.equal(forRequest(laterPrimary, requestId)?.transactionHash, undefined);
+      assert.equal(forRequest(laterBackup, requestId)?.transactionHash, undefined);
+      assert.equal(primaryHits.n, 0);
+      assert.equal(backupHits.n, 0);
+      assert.equal(await nonceOf(primary.address), primaryBefore + 1);
+      assert.equal(await nonceOf(backup.address), backupBefore + 1);
     });
   });
 });
