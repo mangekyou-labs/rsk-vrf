@@ -419,6 +419,14 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         return VRFDerivation.random(_fulfilledBeta(requestId), context);
     }
 
+    function deriveRandomInRange(bytes32 requestId, bytes32 context, uint256 min, uint256 max)
+        external
+        view
+        returns (uint256)
+    {
+        return VRFDerivation.randomInRange(_fulfilledBeta(requestId), context, min, max);
+    }
+
     function getProvingKey(uint32 keyId) external view returns (ProvingKey memory) {
         return _storage().keys[keyId];
     }
