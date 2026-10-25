@@ -15,7 +15,7 @@ export const coordinatorAbi = parseAbi([
   'function getProvingKey(uint32 keyId) view returns (bytes32 keyHash, address payee, uint8 state)',
   'function activeKeyId() view returns (uint32)',
   'function fulfill(bytes32 requestId, Proof proof, uint256[2] drandSignature)',
-  'function request(bytes32 tag) returns (bytes32)',
+  'function request(bytes32 tag) payable returns (bytes32)',
   'function registerProvingKey(uint256[2] publicKey, address payee) returns (uint32)',
   'function deriveRandom(bytes32 requestId, bytes32 context) view returns (uint256)',
   'event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)',
