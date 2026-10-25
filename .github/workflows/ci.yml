@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.5.1
@@ -36,6 +37,22 @@ jobs:
         run: forge fmt --check
       - name: Build
         run: forge build --sizes
+      - name: Test upgrade safety gates
+        run: python3 script/test-upgrade-safety.py --integration
+      - name: Storage layout and runtime size gates
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if ! git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            echo "::error::Storage layout baseline commit is unavailable: $BASE_SHA"
+            exit 1
+          fi
+          if git cat-file -e "$BASE_SHA:contracts/storage-layout/VRFCoordinator.json" 2>/dev/null; then
+            python3 script/check-upgrade-safety.py --base-ref "$BASE_SHA"
+          else
+            echo "Bootstrapping storage snapshot: base revision predates the gate"
+            python3 script/check-upgrade-safety.py
+          fi
       - name: Test
         run: forge test -vvv
 

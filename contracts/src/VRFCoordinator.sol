@@ -14,11 +14,12 @@ import {VRFDerivation} from "./VRFDerivation.sol";
 ///   drand round; any Fulfiller EOA submits the drand signature and a VRF proof over
 ///   Alpha; anyone reads Beta and derived values afterwards.
 /// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage.
-///   Revocation and callbacks come in later slices.
+///   Admin parameters are frozen per request. Key revocation comes in a later slice.
 contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, ReentrancyGuard {
     bytes32 internal constant DOMAIN_ALPHA = keccak256("rsk-vrf/v1/alpha");
     bytes32 internal constant DOMAIN_VRF_BETA = keccak256("rsk-vrf/v1/beta");
 
+    uint256 public constant CALLBACK_RESERVE = 10_000;
     uint64 internal constant DEFAULT_ROUND_OFFSET = 40;
     uint48 internal constant DEFAULT_TIMEOUT_BLOCKS = 1200;
     uint16 internal constant DEFAULT_CONFIRMATIONS = 12;
@@ -83,6 +84,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint48 timeoutBlocks;
         uint16 confirmations;
         mapping(address payee => uint256) payeeBalances;
+        uint32 callbackGasCap;
     }
 
     // keccak256(abi.encode(uint256(keccak256("rsk-vrf.storage.VRFCoordinator")) - 1)) & ~bytes32(uint256(0xff))
@@ -104,25 +106,33 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     event TimeoutBlocksSet(uint48 timeoutBlocks);
     event Refunded(bytes32 indexed requestId, RefundReason reason);
     event FeesWithdrawn(address indexed payee, uint256 amount);
+    event CallbackFailed(bytes32 indexed requestId);
     event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller);
     event KeyRegistered(uint32 keyId, bytes32 keyHash, address payee);
     event KeyStateChanged(uint32 keyId, KeyState state);
+    event CallbackGasCapChanged(uint32 cap);
+    event RoundOffsetChanged(uint64 value);
+    event TimeoutBlocksChanged(uint48 value);
+    event ConfirmationsChanged(uint16 value);
+    event FeeConfigChanged(uint96 amount);
     event DrandConfigAdded(uint8 drandConfigId, uint256[4] publicKey, uint64 genesis, uint64 period);
 
     error FulfillerNotEOA();
+    error TooEarly();
+    error DeadlinePassed();
+    error IncorrectFee(uint256 expected, uint256 sent);
+    error RequesterHasNoCode();
+    error InsufficientGasForCallback();
     error UnknownRequest();
     error RequestNotPending(Status status);
     error RequestPending();
     error RequestRefunded();
-    error TooEarly();
-    error DeadlinePassed();
     error WrongProvingKey();
     error InvalidDrandSignature();
     error NotRefundableYet();
     error RefundTransferFailed();
     error FeeTransferFailed();
     error NoActiveKey();
-    error IncorrectFee(uint256 expected, uint256 sent);
     error InvalidProvingKey();
     error KeyAlreadyRegistered();
     error ValueOutOfBounds(bytes32 param);
@@ -137,38 +147,102 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         CoordinatorStorage storage $ = _storage();
         $.roundOffset = DEFAULT_ROUND_OFFSET;
         $.fee = 2e13;
-        $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
+        $.callbackGasCap = 200_000;
         $.confirmations = DEFAULT_CONFIRMATIONS;
+        $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
+        _addDrandConfig(drand);
+    }
+
+    /// @notice Initializes appended Admin fields when upgrading an earlier coordinator.
+    /// @dev Call atomically through upgradeToAndCall. Existing request records and
+    ///   the selected drand config/round offset are preserved.
+    function initializeAdminParameters() external onlyOwner reinitializer(2) {
+        CoordinatorStorage storage $ = _storage();
+        if ($.callbackGasCap != 0) revert ValueOutOfBounds("adminInitialized");
+        if ($.timeoutBlocks == 0) {
+            $.fee = 2e13;
+            $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
+            $.confirmations = DEFAULT_CONFIRMATIONS;
+        }
+        $.callbackGasCap = 200_000;
+        emit FeeConfigChanged($.fee);
+        emit CallbackGasCapChanged($.callbackGasCap);
+        emit TimeoutBlocksChanged($.timeoutBlocks);
+        emit ConfirmationsChanged($.confirmations);
+    }
+
+    /// @notice Appends and selects a config for new requests; old entries cannot be changed.
+    function addDrandConfig(DrandConfig calldata drand) external onlyOwner returns (uint8) {
+        return _addDrandConfig(drand);
+    }
+
+    function drandConfigCount() external view returns (uint256) {
+        return _storage().drandConfigs.length;
+    }
+
+    function _addDrandConfig(DrandConfig calldata drand) private returns (uint8 id) {
+        CoordinatorStorage storage $ = _storage();
+        if ($.drandConfigs.length >= 256) revert ValueOutOfBounds("drandConfigCount");
         if (drand.period == 0 || !BLS.isValidPublicKey(drand.publicKey)) revert ValueOutOfBounds("drandConfig");
+        id = uint8($.drandConfigs.length);
         $.drandConfigs.push(drand);
-        emit DrandConfigAdded(0, drand.publicKey, drand.genesis, drand.period);
+        emit DrandConfigAdded(id, drand.publicKey, drand.genesis, drand.period);
+    }
+
+    function setCallbackGasCap(uint256 cap) external onlyOwner {
+        if (cap < 25_000 || cap > 2_500_000) revert ValueOutOfBounds("callbackGasCap");
+        _storage().callbackGasCap = uint32(cap);
+        emit CallbackGasCapChanged(uint32(cap));
+    }
+
+    function callbackGasCap() external view returns (uint32) {
+        return _storage().callbackGasCap;
+    }
+
+    function setRoundOffset(uint256 value) external onlyOwner {
+        if (value < 40 || value > type(uint64).max) revert ValueOutOfBounds("roundOffset");
+        _storage().roundOffset = uint64(value);
+        emit RoundOffsetChanged(uint64(value));
+    }
+
+    function roundOffset() external view returns (uint64) {
+        return _storage().roundOffset;
+    }
+
+    function setTimeoutBlocks(uint256 value) external onlyOwner {
+        if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
+        _storage().timeoutBlocks = uint48(value);
+        emit TimeoutBlocksChanged(uint48(value));
+        emit TimeoutBlocksSet(uint48(value));
+    }
+
+    function timeoutBlocks() external view returns (uint48) {
+        return _storage().timeoutBlocks;
+    }
+
+    function setConfirmations(uint256 value) external onlyOwner {
+        if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
+        _storage().confirmations = uint16(value);
+        emit ConfirmationsChanged(uint16(value));
+        emit ConfirmationsSet(uint16(value));
+    }
+
+    function confirmations() external view returns (uint16) {
+        return _storage().confirmations;
+    }
+
+    function setFeeConfig(uint256 amount) external onlyOwner {
+        if (amount > type(uint96).max) revert ValueOutOfBounds("fee");
+        _storage().fee = uint96(amount);
+        emit FeeConfigChanged(uint96(amount));
+        emit FeeConfigSet(uint96(amount));
+    }
+
+    function fee() external view returns (uint96) {
+        return _storage().fee;
     }
 
     // ------------------------------------------------------------------ admin
-
-    /// @notice Changes the flat native-rBTC fee for new requests only.
-    function setFeeConfig(uint256 amount) external onlyOwner {
-        if (amount > type(uint96).max) revert ValueOutOfBounds("fee");
-        // The bound above guarantees the stored request fee fits uint96.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint96 boundedAmount = uint96(amount);
-        _storage().fee = boundedAmount;
-        emit FeeConfigSet(boundedAmount);
-    }
-
-    /// @notice Changes the confirmation wait for new requests only.
-    function setConfirmations(uint16 value) external onlyOwner {
-        if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
-        _storage().confirmations = value;
-        emit ConfirmationsSet(value);
-    }
-
-    /// @notice Changes the lifetime in blocks for new requests only.
-    function setTimeoutBlocks(uint48 value) external onlyOwner {
-        if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
-        _storage().timeoutBlocks = value;
-        emit TimeoutBlocksSet(value);
-    }
 
     /// @notice Registers a Proving Key and makes it Active; the previous Active Key
     ///   moves to Draining. The Payee is fixed here.
@@ -199,11 +273,19 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
 
     /// @notice Requests randomness bound to the Active Key and a future drand round.
     function request(bytes32 tag) external payable returns (bytes32 requestId) {
+        return _request(tag, 0);
+    }
+
+    function requestWithCallback(bytes32 tag) external payable returns (bytes32 requestId) {
+        if (msg.sender.code.length == 0) revert RequesterHasNoCode();
+        return _request(tag, _storage().callbackGasCap);
+    }
+
+    function _request(bytes32 tag, uint32 cap) private returns (bytes32 requestId) {
         CoordinatorStorage storage $ = _storage();
         uint32 keyId = $.activeKeyId;
         if (keyId == 0) revert NoActiveKey();
-        uint96 requestFee = $.fee;
-        if (msg.value != requestFee) revert IncorrectFee(requestFee, msg.value);
+        if (msg.value != $.fee) revert IncorrectFee($.fee, msg.value);
 
         uint256 nonce = $.requesterNonces[msg.sender]++;
         requestId = keccak256(abi.encode(block.chainid, address(this), msg.sender, nonce, tag));
@@ -211,24 +293,33 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint8 drandConfigId = uint8($.drandConfigs.length - 1);
         DrandConfig storage drand = $.drandConfigs[drandConfigId];
         if (block.timestamp < drand.genesis) revert ValueOutOfBounds("drandGenesis");
-        uint64 targetRound = uint64((block.timestamp - drand.genesis) / drand.period + 1 + $.roundOffset);
+        uint256 round = (block.timestamp - drand.genesis) / drand.period + 1 + $.roundOffset;
+        if (round > type(uint64).max) revert ValueOutOfBounds("targetRound");
+        uint64 targetRound = uint64(round);
+        if (block.number > type(uint48).max - $.timeoutBlocks) revert ValueOutOfBounds("requestBlock");
         uint48 requestBlock = uint48(block.number);
         uint48 deadline = requestBlock + $.timeoutBlocks;
 
         $.requests[requestId] = Request({
             requester: msg.sender,
             status: Status.Pending,
-            callbackGasCap: 0,
+            callbackGasCap: cap,
             requestBlock: requestBlock,
             drandConfigId: drandConfigId,
-            fee: requestFee,
+            fee: $.fee,
             targetRound: targetRound,
             deadline: deadline,
             confirmations: $.confirmations,
             keyId: keyId,
             beta: bytes32(0)
         });
-        emit RandomnessRequested(requestId, msg.sender, tag, keyId, targetRound, requestBlock, deadline, requestFee, 0);
+        _emitRequested(requestId, tag, $.requests[requestId]);
+    }
+
+    function _emitRequested(bytes32 requestId, bytes32 tag, Request storage r) private {
+        emit RandomnessRequested(
+            requestId, r.requester, tag, r.keyId, r.targetRound, r.requestBlock, r.deadline, r.fee, r.callbackGasCap
+        );
     }
 
     /// @notice Fulfils a Pending request. `proof.seed` is ignored: the proof is checked
@@ -262,10 +353,27 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint256 output = _randomValueFromVRFProof(proof, uint256(alpha));
         bytes32 beta = keccak256(abi.encode(DOMAIN_VRF_BETA, output));
 
+        if (r.callbackGasCap != 0 && gasleft() < uint256(r.callbackGasCap) + CALLBACK_RESERVE) {
+            revert InsufficientGasForCallback();
+        }
         r.status = Status.Fulfilled;
         r.beta = beta;
         $.payeeBalances[$.keys[r.keyId].payee] += r.fee;
         emit Fulfilled(requestId, beta, msg.sender);
+        if (r.callbackGasCap != 0) _deliverCallback(requestId, r.requester, beta, r.callbackGasCap);
+    }
+
+    function _deliverCallback(bytes32 requestId, address requester, bytes32 beta, uint32 cap) private {
+        bytes memory data = abi.encodeWithSignature("onRandomness(bytes32,bytes32)", requestId, beta);
+        // EIP-150 retains 1/64 of available gas. Include that headroom as well as
+        // the reserve for call overhead and the outcome event so the full cap is
+        // forwarded. A revert here rolls back the entire fulfillment.
+        if (gasleft() < uint256(cap) + uint256(cap) / 63 + CALLBACK_RESERVE) revert InsufficientGasForCallback();
+        bool success;
+        assembly ("memory-safe") {
+            success := call(cap, requester, 0, add(data, 32), mload(data), 0, 0)
+        }
+        if (!success) emit CallbackFailed(requestId);
     }
 
     /// @notice Anyone may return a Pending request's Escrow after its hard Deadline.
@@ -294,18 +402,6 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     }
 
     // ------------------------------------------------------------------ reads
-
-    function fee() external view returns (uint96) {
-        return _storage().fee;
-    }
-
-    function confirmations() external view returns (uint16) {
-        return _storage().confirmations;
-    }
-
-    function timeoutBlocks() external view returns (uint48) {
-        return _storage().timeoutBlocks;
-    }
 
     function payeeBalance(address payee) external view returns (uint256) {
         return _storage().payeeBalances[payee];
