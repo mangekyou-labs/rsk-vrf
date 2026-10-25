@@ -11,7 +11,8 @@ contract DrandEvmnetRoundsTest is Test {
 
     DrandRoundsHarness internal drand;
     string internal json;
-    // [x.im, x.re, y.im, y.re]. See evmnetPublicKey.
+    // Beacon wire is Kyber [x.im, x.re, y.im, y.re].
+    // key = [w1, w0, w3, w2] is DrandEvmnet's [x.re, x.im, y.re, y.im].
     uint256[4] internal publicKey;
 
     struct Round {
@@ -49,8 +50,9 @@ contract DrandEvmnetRoundsTest is Test {
     }
 
     /// The beacon publishes the G2 key as 128 bytes, four big-endian words.
-    /// Wire order [x.re, x.im, y.re, y.im] is not on the G2 twist, so verify is false.
-    /// Swapped Fp2 limbs [x.im, x.re, y.im, y.re] are on the curve and verify.
+    /// Beacon wire is Kyber [x.im, x.re, y.im, y.re]. key = [w1, w0, w3, w2]
+    /// is DrandEvmnet's [x.re, x.im, y.re, y.im]. Raw wire order in those
+    /// slots does not verify.
     function evmnetPublicKey() internal view returns (uint256[4] memory key) {
         bytes memory raw = vm.parseBytes(string.concat("0x", vm.parseJsonString(json, ".publicKey")));
         require(raw.length == 128, "public key length");

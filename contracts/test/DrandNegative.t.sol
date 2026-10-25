@@ -93,8 +93,9 @@ contract DrandNegativeTest is Test {
         assertFalse(harness.verify(publicKey, 1, off));
     }
 
+    /// Issue #34's non-canonical case: the other G1 point with the same x.
     /// y' = N - y is on the curve and in range. It is not the signature.
-    function test_NonCanonicalSignatureIsFalse() public view {
+    function test_NegatedOnCurveSignatureIsFalse() public view {
         assertTrue(sig1[1] != 0);
         uint256[2] memory neg = [sig1[0], N - sig1[1]];
         assertLt(neg[1], N);
