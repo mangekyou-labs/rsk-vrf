@@ -12,7 +12,7 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "test:integration": "node --test integration/regtest.test.ts",
+    "test:integration": "node --test --test-concurrency=1 integration/*.test.ts",
     "start": "node src/run.ts"
   },
   "dependencies": {
