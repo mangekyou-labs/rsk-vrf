@@ -84,6 +84,7 @@ it('real rskj: upgrade preserves requests and balances; worker fulfills, settles
     const submitted = await worker.pollOnce();
     assert.equal(submitted[0]?.status, 'submitted', 'same queued request retries after simulation failure');
     const fulfilledReceipt = await receipt(submitted[0]!.transactionHash!);
+    assert.equal((await client.getTransaction({ hash: submitted[0]!.transactionHash! })).gas, 652_000n, 'plain requests use the verification budget without reserving an unused callback cap');
     const fulfilled = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs })[0]!;
     assert.equal(fulfilled.args.fulfiller.toLowerCase(), fulfiller.address.toLowerCase());
     assert.notEqual(requester.address, fulfiller.address);

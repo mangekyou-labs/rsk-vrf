@@ -142,7 +142,7 @@ jobs:
             sleep 1
           done
           exit 1
-      - name: Deploy, request, fulfill and derive on rskj
+      - name: Callback reserve boundaries, upgrade and worker lifecycle on rskj
         env:
           RSK_RPC_URL: http://127.0.0.1:4444
           TEST_RELAY_BIN: ${{ runner.temp }}/test-relay

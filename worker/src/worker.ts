@@ -54,7 +54,10 @@ export function createWorker(config: WorkerConfig) {
           if (typeof body !== 'object' || body === null || !('round' in body) || BigInt(String(body.round)) !== request.targetRound || !('signature' in body) || typeof body.signature !== 'string') throw new Error('Invalid beacon response');
           const signature = (body.signature.startsWith('0x') ? body.signature : `0x${body.signature}`) as Hex;
           const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: request.requester, requestId, targetRound: request.targetRound, signature }, config.provingKey);
-          const { request: simulated } = await publicClient.simulateContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature], account: wallet.account, type: 'legacy', gas: 5_000_000n, gasPrice: (await publicClient.getGasPrice()) || 1n });
+          // Budget verification at its measured worst case (642k) plus the 10k
+          // callback reserve and the entire frozen Callback Gas Cap. Estimation
+          // sees only today's callback path and can underfund a later path.
+          const { request: simulated } = await publicClient.simulateContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature], account: wallet.account, type: 'legacy', gas: 652_000n + BigInt(request.callbackGasCap), gasPrice: (await publicClient.getGasPrice()) || 1n });
           const transactionHash = await wallet.writeContract(simulated);
           pending.delete(requestId);
           results.push({ requestId, status: 'submitted', transactionHash });
