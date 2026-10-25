@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {BLS} from "./vendor/bls-bn254/BLS.sol";
 import {VRF} from "./vendor/chainlink/VRF.sol";
 import {DrandEvmnet} from "./DrandEvmnet.sol";
@@ -13,9 +14,8 @@ import {VRFDerivation} from "./VRFDerivation.sol";
 ///   drand round; any Fulfiller EOA submits the drand signature and a VRF proof over
 ///   Alpha; anyone reads Beta and derived values afterwards.
 /// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage.
-///   Admin parameters are frozen per request. Fee settlement, refunds and key
-///   revocation are implemented in subsequent lifecycle slices.
-contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
+///   Admin parameters are frozen per request. Key revocation comes in a later slice.
+contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, ReentrancyGuard {
     bytes32 internal constant DOMAIN_ALPHA = keccak256("rsk-vrf/v1/alpha");
     bytes32 internal constant DOMAIN_VRF_BETA = keccak256("rsk-vrf/v1/beta");
 
@@ -29,6 +29,11 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         Pending,
         Fulfilled,
         Refunded
+    }
+
+    enum RefundReason {
+        Deadline,
+        KeyRevoked
     }
 
     enum KeyState {
@@ -76,9 +81,10 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         uint64 roundOffset;
         DrandConfig[] drandConfigs;
         uint96 fee;
-        uint32 callbackGasCap;
         uint48 timeoutBlocks;
         uint16 confirmations;
+        mapping(address payee => uint256) payeeBalances;
+        uint32 callbackGasCap;
     }
 
     // keccak256(abi.encode(uint256(keccak256("rsk-vrf.storage.VRFCoordinator")) - 1)) & ~bytes32(uint256(0xff))
@@ -95,6 +101,11 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         uint96 fee,
         uint32 callbackGasCap
     );
+    event FeeConfigSet(uint96 amount);
+    event ConfirmationsSet(uint16 confirmations);
+    event TimeoutBlocksSet(uint48 timeoutBlocks);
+    event Refunded(bytes32 indexed requestId, RefundReason reason);
+    event FeesWithdrawn(address indexed payee, uint256 amount);
     event CallbackFailed(bytes32 indexed requestId);
     event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller);
     event KeyRegistered(uint32 keyId, bytes32 keyHash, address payee);
@@ -118,6 +129,9 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
     error RequestRefunded();
     error WrongProvingKey();
     error InvalidDrandSignature();
+    error NotRefundableYet();
+    error RefundTransferFailed();
+    error FeeTransferFailed();
     error NoActiveKey();
     error InvalidProvingKey();
     error KeyAlreadyRegistered();
@@ -139,16 +153,18 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         _addDrandConfig(drand);
     }
 
-    /// @notice Initializes appended Admin fields when upgrading the pre-admin tracer.
+    /// @notice Initializes appended Admin fields when upgrading an earlier coordinator.
     /// @dev Call atomically through upgradeToAndCall. Existing request records and
     ///   the selected drand config/round offset are preserved.
     function initializeAdminParameters() external onlyOwner reinitializer(2) {
         CoordinatorStorage storage $ = _storage();
-        if ($.timeoutBlocks != 0) revert ValueOutOfBounds("adminInitialized");
-        $.fee = 2e13;
+        if ($.callbackGasCap != 0) revert ValueOutOfBounds("adminInitialized");
+        if ($.timeoutBlocks == 0) {
+            $.fee = 2e13;
+            $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
+            $.confirmations = DEFAULT_CONFIRMATIONS;
+        }
         $.callbackGasCap = 200_000;
-        $.timeoutBlocks = DEFAULT_TIMEOUT_BLOCKS;
-        $.confirmations = DEFAULT_CONFIRMATIONS;
         emit FeeConfigChanged($.fee);
         emit CallbackGasCapChanged($.callbackGasCap);
         emit TimeoutBlocksChanged($.timeoutBlocks);
@@ -197,6 +213,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
         _storage().timeoutBlocks = uint48(value);
         emit TimeoutBlocksChanged(uint48(value));
+        emit TimeoutBlocksSet(uint48(value));
     }
 
     function timeoutBlocks() external view returns (uint48) {
@@ -207,6 +224,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
         _storage().confirmations = uint16(value);
         emit ConfirmationsChanged(uint16(value));
+        emit ConfirmationsSet(uint16(value));
     }
 
     function confirmations() external view returns (uint16) {
@@ -217,6 +235,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         if (amount > type(uint96).max) revert ValueOutOfBounds("fee");
         _storage().fee = uint96(amount);
         emit FeeConfigChanged(uint96(amount));
+        emit FeeConfigSet(uint96(amount));
     }
 
     function fee() external view returns (uint96) {
@@ -339,6 +358,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         }
         r.status = Status.Fulfilled;
         r.beta = beta;
+        $.payeeBalances[$.keys[r.keyId].payee] += r.fee;
         emit Fulfilled(requestId, beta, msg.sender);
         if (r.callbackGasCap != 0) _deliverCallback(requestId, r.requester, beta, r.callbackGasCap);
     }
@@ -356,7 +376,36 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {
         if (!success) emit CallbackFailed(requestId);
     }
 
+    /// @notice Anyone may return a Pending request's Escrow after its hard Deadline.
+    /// @dev A failed push rolls back the status change, leaving the request Pending.
+    function timeoutRefund(bytes32 requestId) external nonReentrant {
+        Request storage r = _storage().requests[requestId];
+        Status status = r.status;
+        if (status == Status.None) revert UnknownRequest();
+        if (status != Status.Pending) revert RequestNotPending(status);
+        if (block.number <= r.deadline) revert NotRefundableYet();
+        r.status = Status.Refunded;
+        (bool sent,) = r.requester.call{value: r.fee}("");
+        if (!sent) revert RefundTransferFailed();
+        emit Refunded(requestId, RefundReason.Deadline);
+    }
+
+    /// @notice Withdraws only the caller's credited fees; no-op for an empty balance.
+    function withdrawFees() external nonReentrant {
+        CoordinatorStorage storage $ = _storage();
+        uint256 amount = $.payeeBalances[msg.sender];
+        if (amount == 0) return;
+        $.payeeBalances[msg.sender] = 0;
+        (bool sent,) = msg.sender.call{value: amount}("");
+        if (!sent) revert FeeTransferFailed();
+        emit FeesWithdrawn(msg.sender, amount);
+    }
+
     // ------------------------------------------------------------------ reads
+
+    function payeeBalance(address payee) external view returns (uint256) {
+        return _storage().payeeBalances[payee];
+    }
 
     function getRequest(bytes32 requestId) external view returns (Request memory) {
         return _storage().requests[requestId];

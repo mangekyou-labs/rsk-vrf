@@ -46,7 +46,7 @@ class CompiledLayoutTest(unittest.TestCase):
         source = SCRIPT.parents[1] / 'src/VRFCoordinator.sol'
         snapshot = SCRIPT.parents[1] / 'storage-layout/VRFCoordinator.json'
         original, original_snapshot = source.read_text(), snapshot.read_bytes()
-        declaration = 'contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable {'
+        declaration = 'contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, ReentrancyGuard {'
         location = int('93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900', 16)
         try:
             for start, fields, error in [
@@ -78,6 +78,7 @@ class CompiledLayoutTest(unittest.TestCase):
         original = source.read_text()
         mutations = [
             ('accessor location', '0x93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068900', '0x93e472312740d9d8ceb01cbb3b48eb9a4521b1f1a04d71a14a7e0f61bd068800'),
+            ('inherited guard location', '    function _deliverCallback(', '    function _reentrancyGuardStorageSlot() internal pure override returns (bytes32) { return bytes32(uint256(1234)); }\n\n    function _deliverCallback('),
             ('mapped request layout', 'uint48 requestBlock;\n        uint8 drandConfigId;', 'uint8 drandConfigId;\n        uint48 requestBlock;'),
             ('array config layout', 'uint64 genesis;\n        uint64 period;', 'uint64 period;\n        uint64 genesis;'),
         ]

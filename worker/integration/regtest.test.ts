@@ -23,7 +23,7 @@ const artifact = (name: string) => JSON.parse(readFileSync(new URL(`../../contra
 async function mine() { await client.request({ method: 'evm_mine' as never, params: [] as never }); }
 async function receipt(hash: Hex) { await mine(); const r = await client.waitForTransactionReceipt({ hash }); assert.equal(r.status, 'success'); return r; }
 
-it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserves state and Pending requests fulfill', { timeout: 180_000 }, async () => {
+it('real rskj: upgrade preserves requests and balances; worker fulfills, settles fees and refunds Escrow', { timeout: 180_000 }, async () => {
   const relayPort = 18769;
   const relay = spawn(process.env.TEST_RELAY_BIN ?? '/tmp/rsk-vrf-test-relay', ['-test-relay', `127.0.0.1:${relayPort}`], { stdio: ['ignore', 'ignore', 'pipe'] });
   let relayError = ''; relay.stderr.on('data', chunk => { relayError += String(chunk); });
@@ -49,7 +49,7 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
     const key = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey);
     await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'registerProvingKey', args: [key.publicKey, owner.address], gas: 500_000n, gasPrice: 1n }));
     const requesterWallet = createWalletClient({ account: requester, chain, transport: http(rpcUrl) });
-    const requestReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'request', args: [`0x${'ab'.repeat(32)}`], value: 20_000_000_000_000n, gas: 500_000n, gasPrice: 1n }));
+    const requestReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'request', args: [`0x${'ab'.repeat(32)}`], value: 2n * 10n ** 13n, gas: 500_000n, gasPrice: 1n }));
     const event = parseEventLogs({ abi: coordinatorAbi, eventName: 'RandomnessRequested', logs: requestReceipt.logs })[0]!;
     const requestId = event.args.requestId;
     const record = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
@@ -69,6 +69,10 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
         return Response.json({ ...body, signature: other.signature });
       },
     });
+    now = roundTime;
+    assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
+    assert.equal(relayCalls, 0, 'frozen confirmations are checked before fetching a published round');
+    now = roundTime - 1n;
     for (let n = 0; n < 12; n++) await mine();
     assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
     assert.equal(relayCalls, 0, 'future frozen round does not fetch or consume event');
@@ -116,6 +120,7 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
     const getters = ['fee', 'callbackGasCap', 'roundOffset', 'timeoutBlocks', 'confirmations', 'drandConfigCount', 'owner', 'pendingOwner'] as const;
     const readParameters = () => Promise.all(getters.map(functionName => client.readContract({ address: coordinator, abi: implementation.abi, functionName })));
     const parameters = await readParameters();
+    const balanceBeforeUpgrade = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [owner.address] });
     const provingKey = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [1] });
     const nonce = await client.readContract({ address: coordinator, abi: implementation.abi, functionName: 'requesterNonce', args: [requester.address] });
     assert.equal(nonce, 2n);
@@ -134,6 +139,7 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
     assert.equal(await client.getStorageAt({ address: coordinator, slot: implementationSlot }), `0x${nextAddress.slice(2).toLowerCase().padStart(64, '0')}`);
     assert.equal(await client.readContract({ address: coordinator, abi: next.abi, functionName: 'revision' }), 2n, 'proxy executes the new implementation');
     assert.deepEqual(await readParameters(), parameters, 'all Admin parameters and ownership survive');
+    assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [owner.address] }), balanceBeforeUpgrade, 'earned fees survive upgrade');
     assert.equal(await client.readContract({ address: coordinator, abi: implementation.abi, functionName: 'requesterNonce', args: [requester.address] }), nonce);
     assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'activeKeyId' }), 1);
     assert.deepEqual(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [1] }), provingKey);
@@ -156,6 +162,40 @@ it('real rskj: worker fulfills, non-Admin upgrade reverts, Admin upgrade preserv
     assert.equal(after.status, 2);
     assert.equal(after.beta, pendingExpected.beta, 'post-upgrade Beta still matches the independent Go prover');
     assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [pendingId, context] }), BigInt(pendingExpected.random));
+    const fee = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'fee' });
+    assert.equal(record.fee, 20_000_000_000_000n, 'request escrows exact native rBTC fee');
+    assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [owner.address] }), record.fee + pendingRecord.fee);
+    const withdrew = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'withdrawFees', gas: 300_000n, gasPrice: 1n }));
+    assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'FeesWithdrawn', logs: withdrew.logs })[0]!.args.amount, record.fee + pendingRecord.fee);
+    assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [owner.address] }), 0n);
+
+    // Keep two requests queued while the worker is offline. A third party refunds
+    // one; the other stays Pending after its hard Deadline. Neither may be sent.
+    const expiring = [];
+    for (const tag of ['cd', 'ef']) {
+      const made = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'request', args: [`0x${tag.repeat(32)}`], value: fee, gas: 500_000n, gasPrice: 1n }));
+      const id = parseEventLogs({ abi: coordinatorAbi, eventName: 'RandomnessRequested', logs: made.logs })[0]!.args.requestId;
+      const request = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [id] });
+      expiring.push({ id, request });
+    }
+    assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting', 'waiting']);
+    // Changing the current fee must not change either request's Refund amount.
+    await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'setFeeConfig', args: [0n], gas: 100_000n, gasPrice: 1n }));
+    while (await client.getBlockNumber({ cacheTime: 0 }) <= BigInt(expiring[1]!.request.deadline)) await mine();
+    const requesterBeforeRefund = await client.getBalance({ address: requester.address });
+    const refunded = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'timeoutRefund', args: [expiring[0]!.id], gas: 300_000n, gasPrice: 1n }));
+    assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refunded.logs })[0]!.args.reason, 0, 'Deadline reason');
+    assert.equal(await client.getBalance({ address: requester.address }), requesterBeforeRefund + fee, 'third-party refund pushes the frozen Escrow to Requester');
+    const refundRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [expiring[0]!.id] });
+    assert.equal(refundRecord.status, 3);
+    assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [expiring[1]!.id] })).status, 1);
+    const nonceBeforeSkip = await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' });
+    const callsBeforeSkip = relayCalls;
+    assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['skipped', 'skipped']);
+    assert.equal(relayCalls, callsBeforeSkip, 'Refunded and expired requests never fetch a beacon');
+    assert.equal(await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' }), nonceBeforeSkip, 'no fulfill is broadcast past a hard Deadline');
+    assert.deepEqual(await worker.pollOnce(), [], 'Refunded and expired requests are dropped');
+
   } finally {
     relay.kill('SIGTERM');
     if (relay.exitCode === null) await once(relay, 'exit');

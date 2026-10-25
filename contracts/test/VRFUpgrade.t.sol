@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
 import {VRFCoordinator} from "../src/VRFCoordinator.sol";
+import {FeesCoordinator} from "./harness/FeesCoordinator.sol";
 import {LegacyCoordinator} from "./harness/LegacyCoordinator.sol";
 import {CoordinatorVectorFixture} from "./VRFCoordinator.t.sol";
 
@@ -59,5 +60,53 @@ contract VRFUpgradeTest is CoordinatorVectorFixture {
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         coordinator.initializeAdminParameters();
+    }
+
+    function test_FeesUpgradePreservesParametersBalancesAndPendingRequest() public {
+        RequestVector memory first = vector(0);
+        RequestVector memory pending = vector(1);
+        bytes memory init = abi.encodeCall(
+            FeesCoordinator.initialize,
+            (owner, FeesCoordinator.DrandConfig(drandPublicKey(), drandGenesis(), drandPeriod()))
+        );
+        deployCodeTo(
+            "ERC1967Proxy.sol:ERC1967Proxy", abi.encode(address(new FeesCoordinator()), init), first.coordinator
+        );
+        FeesCoordinator previous = FeesCoordinator(first.coordinator);
+        coordinator = VRFCoordinator(first.coordinator);
+        vm.startPrank(owner);
+        previous.registerProvingKey(first.proof.pk, owner);
+        previous.setFeeConfig(12345);
+        previous.setTimeoutBlocks(601);
+        previous.setConfirmations(6);
+        previous.transferOwnership(stranger);
+        vm.stopPrank();
+        vm.deal(first.requester, 1 ether);
+        vm.prank(first.requester);
+        previous.request{value: 12345}(first.tag);
+        vm.roll(block.number + 6);
+        vm.prank(stranger, stranger);
+        previous.fulfill(first.requestId, first.proof, first.drandSignature);
+        assertEq(previous.payeeBalance(owner), 12345);
+        vm.warp(pending.requestTimestamp);
+        vm.deal(pending.requester, 1 ether);
+        vm.prank(pending.requester);
+        previous.request{value: 12345}(pending.tag);
+        bytes memory frozen = abi.encode(previous.getRequest(pending.requestId));
+        address next = address(new VRFCoordinator());
+        vm.prank(owner);
+        previous.upgradeToAndCall(next, abi.encodeCall(VRFCoordinator.initializeAdminParameters, ()));
+        assertEq(coordinator.fee(), 12345);
+        assertEq(coordinator.timeoutBlocks(), 601);
+        assertEq(coordinator.confirmations(), 6);
+        assertEq(coordinator.callbackGasCap(), 200_000);
+        assertEq(coordinator.payeeBalance(owner), 12345);
+        assertEq(coordinator.pendingOwner(), stranger);
+        assertEq(abi.encode(coordinator.getRequest(pending.requestId)), frozen);
+        vm.roll(block.number + 6);
+        vm.prank(stranger, stranger);
+        coordinator.fulfill(pending.requestId, pending.proof, pending.drandSignature);
+        assertEq(coordinator.getRequest(pending.requestId).beta, pending.beta);
+        assertEq(coordinator.payeeBalance(owner), 24690);
     }
 }

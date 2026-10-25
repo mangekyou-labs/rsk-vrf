@@ -78,6 +78,8 @@ def extract():
                 if node.get('nodeType') == 'VariableDeclarationStatement' and any(d and d['id'] == declaration['id'] for d in node['declarations']):
                     return evaluate(node['initialValue'], seen)
         if kind == 'FunctionCall':
+            if expression.get('kind') == 'typeConversion' and len(expression.get('arguments', [])) == 1:
+                return evaluate(expression['arguments'][0], seen)
             function = nodes[expression['expression']['referencedDeclaration']]
             # Respect the most-derived implementation of a virtual slot getter.
             function = next((f for cid in coordinator['linearizedBaseContracts'] for f in nodes[cid]['nodes'] if f.get('nodeType') == 'FunctionDefinition' and f.get('name') == function['name'] and f.get('body')), function)
@@ -144,6 +146,12 @@ def extract():
     for i, (namespace, _, _, _, location) in enumerate(namespaces):
         field = next(m for m in layout['storage'] if m['label'] == f'namespace_{i}')
         result['namespaces'][namespace] = {'location': location, 'type': describe(field['type'])}
+    # OZ's slot-based guard has no annotated struct, but its uint256 state must
+    # participate in compatibility and collision checks just like the namespaces.
+    guard = next((f for cid in coordinator['linearizedBaseContracts'] for f in nodes[cid]['nodes'] if f.get('nodeType') == 'FunctionDefinition' and f.get('name') == '_reentrancyGuardStorageSlot' and f.get('body')), None)
+    if guard:
+        location = evaluate({'nodeType': 'FunctionCall', 'expression': {'referencedDeclaration': guard['id']}})
+        result['namespaces']['openzeppelin.storage.ReentrancyGuard'] = {'location': location, 'type': {'label': 'uint256', 'encoding': 'inplace', 'bytes': '32'}}
     # Namespace identifiers do not prevent accessors from targeting the same
     # physical slots. Include every occupied root slot, not just the first one.
     ranges = []
