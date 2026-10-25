@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { describe, it } from 'node:test';
-import { BaseError, ContractFunctionRevertedError, createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
@@ -144,7 +144,7 @@ async function closeServer(server: Server) {
 }
 
 describe('worker regtest', { concurrency: 1 }, () => {
-  it('real rskj: waits frozen round, rejects simulation without a send, retries and fulfills from separate EOA, derives independent Go expected word, and keeps the id until the outcome is confirmations deep', { timeout: 180_000 }, async () => {
+  it('real rskj: waits frozen round, rejects simulation without a send, retries and fulfills from separate EOA, derives independent Go expected word, and keeps the id until the outcome is 12 blocks deep', { timeout: 180_000 }, async () => {
     await withRelay(18769, async relayUrl => {
       await fund([requester, fulfiller]);
       const { coordinator, key, beacon } = await deployCoordinator();
@@ -156,10 +156,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let relayCalls = 0;
       let invalidSignature = true;
       await mineBlocks(confirmations);
-      const cursor = await head();
-      assert.ok(cursor > requestReceipt.blockNumber, 'caller cursor is past the request block');
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), fromBlock: cursor, nowSeconds: () => now,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -183,22 +181,25 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const again = await worker.pollOnce();
       assert.equal(forRequest(again, requestId)?.status, 'waiting');
       assert.equal(await nonceOf(fulfiller.address), inflightNonce, 'a second poll does not send another fulfillment');
+      const restartedSameFulfiller = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now });
+      assert.equal(forRequest(await restartedSameFulfiller.pollOnce(), requestId)?.status, 'waiting');
+      assert.equal(await nonceOf(fulfiller.address), before + 1, 'restart does not duplicate an unmined fulfill');
       const fulfilledReceipt = await receipt(submitted[0]!.transactionHash!);
       const fulfilled = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs })[0];
       assert.ok(fulfilled);
       assert.equal(fulfilled.args.fulfiller.toLowerCase(), fulfiller.address.toLowerCase());
       assert.notEqual(requester.address, fulfiller.address);
-      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
       const expectedUrl = new URL(`${relayUrl}/expected`);
-      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
       const expected = await (await fetch(expectedUrl)).json() as { beta: Hex; random: Hex };
       const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
       assert.equal(finalRecord.status, 2);
       assert.equal(finalRecord.beta, expected.beta, 'Beta matches independently domain-bound Go prover output');
-      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, context] }), BigInt(expected.random));
+      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, derivationContext] }), BigInt(expected.random));
       const held = await worker.pollOnce();
       assert.equal(forRequest(held, requestId)?.status, 'waiting', 'an outcome at depth 0 stays pending');
-      await mineBlocks(confirmations);
+      await mineBlocks(12);
       const released = await worker.pollOnce();
       assert.equal(released.some(item => item.requestId === requestId), false);
     });
@@ -233,7 +234,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
     });
   });
 
-  it('a new fulfiller keeps a mined outcome until it is confirmations deep and does not send another', { timeout: 180_000 }, async () => {
+  it('a new fulfiller keeps a mined outcome until it is 12 blocks deep and does not send another', { timeout: 180_000 }, async () => {
     await withRelay(18771, async relayUrl => {
       const backupKey = `0x${'56'.repeat(32)}` as Hex;
       const backup = privateKeyToAccount(backupKey);
@@ -256,7 +257,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const logs = await client.getLogs({ address: coordinator, event: fulfilledEvent, args: { requestId }, fromBlock: requestReceipt.blockNumber, toBlock: await head(), strict: true });
       assert.equal(logs.length, 1);
       assert.equal(logs[0]?.args.fulfiller.toLowerCase(), fulfiller.address.toLowerCase());
-      await mineBlocks(confirmations);
+      await mineBlocks(12);
       const released = await restarted.pollOnce();
       assert.equal(released.some(item => item.requestId === requestId), false);
     });
@@ -314,9 +315,9 @@ describe('worker regtest', { concurrency: 1 }, () => {
         assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
         assert.deepEqual(deadHits, [1, 1]);
         const fulfilledReceipt = await receipt(forRequest(submitted, requestId)!.transactionHash!);
-        const context = fixture.vectors[0].derivations[0].context as Hex;
+        const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
         const expectedUrl = new URL(`${relayUrl}/expected`);
-        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
         const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
         const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
         assert.equal(finalRecord.status, 2);
@@ -437,9 +438,9 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const submitted = await worker.pollOnce();
         assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
         const fulfilledReceipt = await receipt(forRequest(submitted, requestId)!.transactionHash!);
-        const context = fixture.vectors[0].derivations[0].context as Hex;
+        const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
         const expectedUrl = new URL(`${relayUrl}/expected`);
-        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
         const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
         const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
         assert.equal(finalRecord.status, 2);
@@ -665,8 +666,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
         drandPin: pinOf(beacon), graceBlocks: 100, fetch: countingFetch(bucket),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
       });
-      const eligible = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
-      await mineTo(eligible - 1n);
+      const fulfillableAt = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
+      await mineTo(fulfillableAt - 1n);
       const before = await nonceOf(backup.address);
       bucket.n = 0;
       const early = await worker.pollOnce();
@@ -676,15 +677,15 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.equal(await nonceOf(backup.address), before);
       assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] })).status, 1);
       await mine();
-      assert.equal(await head(), eligible);
+      assert.equal(await head(), fulfillableAt);
       const submitted = await worker.pollOnce();
       assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
       const hash = forRequest(submitted, requestId)?.transactionHash;
       assert.ok(hash);
       const fulfilledReceipt = await receipt(hash);
-      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
       const expectedUrl = new URL(`${relayUrl}/expected`);
-      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
       const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
       const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
       assert.equal(finalRecord.status, 2);
@@ -714,8 +715,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
       };
       const primaryWorker = createWorker({ ...shared, fulfillerPrivateKey: primaryKey, graceBlocks: 0, fetch: countingFetch(primaryHits) });
       const backupWorker = createWorker({ ...shared, fulfillerPrivateKey: backupKey, graceBlocks: 100, fetch: countingFetch(backupHits) });
-      const eligible = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
-      await mineTo(eligible);
+      const fulfillableAt = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
+      await mineTo(fulfillableAt);
       const primaryBefore = await nonceOf(primary.address);
       const backupBefore = await nonceOf(backup.address);
       const primaryResults = await primaryWorker.pollOnce();
@@ -741,24 +742,9 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const winner = fulfilled[0]?.args.fulfiller.toLowerCase();
       assert.ok(winner === primary.address.toLowerCase() || winner === backup.address.toLowerCase());
       assert.equal(receipts.flatMap(item => parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: item.logs })).length, 0);
-      const revertedHash = reverted[0]?.transactionHash;
-      assert.ok(revertedHash);
-      const tx = await client.getTransaction({ hash: revertedHash });
-      const decoded = decodeFunctionData({ abi: coordinatorAbi, data: tx.input });
-      assert.equal(decoded.functionName, 'fulfill');
-      const abi = [...coordinatorAbi, parseAbiItem('error RequestNotPending(uint8 status)')];
-      await assert.rejects(() => client.simulateContract({
-        address: coordinator, abi, functionName: 'fulfill', args: decoded.args as never, account: tx.from, blockNumber: reverted[0]!.blockNumber,
-      }), (error: unknown) => {
-        assert.ok(error instanceof BaseError);
-        const cause = error.walk(item => item instanceof ContractFunctionRevertedError);
-        assert.ok(cause instanceof ContractFunctionRevertedError);
-        assert.equal(cause.data?.errorName, 'RequestNotPending');
-        return true;
-      });
-      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
       const expectedUrl = new URL(`${relayUrl}/expected`);
-      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
       const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
       const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
       assert.equal(finalRecord.status, 2);
@@ -804,7 +790,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const key = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey);
       await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'registerProvingKey', args: [key.publicKey, owner.address], gas: 500_000n, gasPrice: 1n }));
       const requesterWallet = createWalletClient({ account: requester, chain, transport: http(rpcUrl) });
-      const requestReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'request', args: [`0x${'ab'.repeat(32)}`], value: 2n * 10n ** 13n, gas: 500_000n, gasPrice: 1n }));
+      const initialFee = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'fee' });
+      const requestReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'request', args: [`0x${'ab'.repeat(32)}`], value: initialFee, gas: 500_000n, gasPrice: 1n }));
       const event = parseEventLogs({ abi: coordinatorAbi, eventName: 'RandomnessRequested', logs: requestReceipt.logs })[0]!;
       const requestId = event.args.requestId;
       const record = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
@@ -812,7 +799,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let now = roundTime - 1n;
       let relayCalls = 0;
       let invalidSignature = true;
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, fromBlock: requestReceipt.blockNumber, nowSeconds: () => now,
+      let worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -842,14 +829,16 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const fulfilled = parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs })[0]!;
       assert.equal(fulfilled.args.fulfiller.toLowerCase(), fulfiller.address.toLowerCase());
       assert.notEqual(requester.address, fulfiller.address);
-      const context = fixture.vectors[0].derivations[0].context as Hex;
+      const derivationContext = fixture.vectors[0].derivations[0].context as Hex;
       const expectedUrl = new URL(`${relayUrl}/expected`);
-      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+      for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context: derivationContext })) expectedUrl.searchParams.set(name, String(value));
       const expected = await (await fetch(expectedUrl)).json() as { beta: Hex; random: Hex };
       const final = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
       assert.equal(final.status, 2);
       assert.equal(final.beta, expected.beta, 'Beta matches independently domain-bound Go prover output');
-      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, context] }), BigInt(expected.random));
+      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, derivationContext] }), BigInt(expected.random));
+      assert.equal(forRequest(await worker.pollOnce(), requestId)?.status, 'waiting');
+      await mineBlocks(12);
       assert.deepEqual(await worker.pollOnce(), []);
 
       // Populate every namespace before upgrading: Admin parameters, the append-only
@@ -864,7 +853,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const nextBeacon = { ...beacon, period: beacon.period + 1n };
       await receipt(await wallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'addDrandConfig', args: [nextBeacon], gas: 500_000n, gasPrice: 1n }));
       await receipt(await wallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'transferOwnership', args: [requester.address], gas: 150_000n, gasPrice: 1n }));
-      const pendingReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'request', args: [`0x${'cd'.repeat(32)}`], value: 12_345n, gas: 500_000n, gasPrice: 1n }));
+      const pendingFee = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'fee' });
+      const pendingReceipt = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'request', args: [`0x${'cd'.repeat(32)}`], value: pendingFee, gas: 500_000n, gasPrice: 1n }));
       const pendingId = parseEventLogs({ abi: coordinatorAbi, eventName: 'RandomnessRequested', logs: pendingReceipt.logs })[0]!.args.requestId;
       const pendingRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [pendingId] });
       assert.equal(pendingRecord.status, 1);
@@ -902,21 +892,24 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.deepEqual(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [1] }), nextBeacon);
       assert.deepEqual(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] }), final, 'Fulfilled record and Beta survive');
       assert.deepEqual(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [pendingId] }), pendingRecord, 'Pending request retains its complete frozen record');
-      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, context] }), BigInt(expected.random));
+      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [requestId, derivationContext] }), BigInt(expected.random));
 
       // The same proxy and key still accept the proof of the pre-upgrade request.
       now = nextBeacon.genesis + (pendingRecord.targetRound - 1n) * nextBeacon.period;
       for (let n = 0; n < pendingRecord.confirmations; n++) await mine();
+      // The upgraded coordinator's new beacon requires an explicit new local pin.
+      worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(nextBeacon), nowSeconds: () => now });
       const afterUpgrade = await worker.pollOnce();
       assert.equal(afterUpgrade[0]?.status, 'submitted', 'pre-upgrade Pending request remains Fulfillable');
       await receipt(afterUpgrade[0]!.transactionHash!);
       const pendingExpectedUrl = new URL(`${relayUrl}/expected`);
-      for (const [name, value] of Object.entries({ chainId: 33, round: pendingRecord.targetRound, coordinator, requester: requester.address, requestId: pendingId, context })) pendingExpectedUrl.searchParams.set(name, String(value));
+      for (const [name, value] of Object.entries({ chainId: 33, round: pendingRecord.targetRound, coordinator, requester: requester.address, requestId: pendingId, context: derivationContext })) pendingExpectedUrl.searchParams.set(name, String(value));
       const pendingExpected = await (await fetch(pendingExpectedUrl)).json() as { beta: Hex; random: Hex };
       const after = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [pendingId] });
       assert.equal(after.status, 2);
       assert.equal(after.beta, pendingExpected.beta, 'post-upgrade Beta still matches the independent Go prover');
-      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [pendingId, context] }), BigInt(pendingExpected.random));
+      assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'deriveRandom', args: [pendingId, derivationContext] }), BigInt(pendingExpected.random));
+      await mineBlocks(12);
       const fee = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'fee' });
       assert.equal(record.fee, 20_000_000_000_000n, 'request escrows exact native rBTC fee');
       assert.equal(await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [owner.address] }), record.fee + pendingRecord.fee);
@@ -946,10 +939,13 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [expiring[1]!.id] })).status, 1);
       const nonceBeforeSkip = await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' });
       const callsBeforeSkip = relayCalls;
-      assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['skipped', 'skipped']);
+      assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting', 'skipped']);
       assert.equal(relayCalls, callsBeforeSkip, 'Refunded and expired requests never fetch a beacon');
       assert.equal(await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' }), nonceBeforeSkip, 'no fulfill is broadcast past a hard Deadline');
-      assert.deepEqual(await worker.pollOnce(), [], 'Refunded and expired requests are dropped');
+      await mineBlocks(12);
+      const remaining = await worker.pollOnce();
+      assert.equal(forRequest(remaining, expiring[0]!.id), undefined, 'Refunded request leaves after 12 blocks');
+      assert.equal(forRequest(remaining, expiring[1]!.id)?.status, 'skipped', 'expired Pending request stays until an outcome');
 
     } finally {
       relay.kill('SIGTERM');

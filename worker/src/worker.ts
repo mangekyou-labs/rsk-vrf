@@ -23,8 +23,6 @@ export interface WorkerConfig {
   relayUrl?: string;
   /** Tried in order. The first well-formed `/public/<round>` wins. */
   relayUrls?: readonly string[];
-  /** Ignored. Each poll scans `latest − 2,400 − 100` itself. */
-  fromBlock?: bigint;
   /** Blocks after the request's confirmations before a fulfill. Primary is 0; backup is 100. */
   graceBlocks?: number;
   nowSeconds?: () => bigint;
@@ -52,6 +50,9 @@ class NonceSyncError extends Error {
 
 const BACKFILL_BLOCKS = 2_400n + 100n;
 const MAX_LOG_SPAN = 5_000n;
+const OUTCOME_DEPTH = 12n;
+const REQUEST_STATUS = { NONE: 0, PENDING: 1, FULFILLED: 2, REFUNDED: 3 } as const;
+const KEY_STATE = { NONE: 0 } as const;
 const FULFILL_GAS = 507_000n;
 const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
@@ -76,7 +77,7 @@ type Inflight = {
   value: bigint;
   canResign: boolean;
 };
-type Ready = {
+type Fulfillable = {
   requestId: Hex;
   requester: Address;
   targetRound: bigint;
@@ -122,7 +123,7 @@ function replacementPrice(previous: bigint, cap: bigint | null): bigint | null {
   return next;
 }
 
-/** Stateless backfill. An id stays until Fulfilled or Refunded is `confirmations` deep. */
+/** Stateless backfill. An id stays until Fulfilled or Refunded is 12 blocks deep. */
 export function createWorker(config: WorkerConfig) {
   const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl), cacheTime: 0 });
   const account = privateKeyToAccount(config.fulfillerPrivateKey);
@@ -131,6 +132,9 @@ export function createWorker(config: WorkerConfig) {
   const reportedGone = new Set<Hex>();
   const inflight = new Map<number, Inflight>();
   let nextNonce: number | null = null;
+  let balance = 0n;
+  let reserveCost = 0n;
+  let unknownPending = false;
   const fetchRelay = config.fetch ?? globalThis.fetch;
   const now = config.nowSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
   const report = config.report ?? ((line: string) => process.stderr.write(`${line}\n`));
@@ -201,6 +205,9 @@ export function createWorker(config: WorkerConfig) {
 
   /** Assigns the nonce in the local map only after the node accepts the bytes. */
   async function publish(fields: Inflight): Promise<Hex | null> {
+    let reserved = 0n;
+    for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
+    if (balance - reserved < reserveCost) return null;
     if (fields.serialized == null && (!fields.canResign || fields.to == null)) return null;
     try {
       const to = fields.to;
@@ -223,10 +230,10 @@ export function createWorker(config: WorkerConfig) {
     }
   }
 
-  async function republish(entry: Inflight, submittedBlock: bigint): Promise<Hex | null> {
-    if (entry.serialized != null) return publish({ ...entry, submittedBlock });
+  async function republish(entry: Inflight): Promise<Hex | null> {
+    if (entry.serialized != null) return publish({ ...entry });
     if (!entry.canResign || entry.to == null) return null;
-    return publish({ ...entry, serialized: null, submittedBlock });
+    return publish({ ...entry, serialized: null });
   }
 
   async function simulateReplacement(entry: Inflight, gasPrice: bigint): Promise<boolean> {
@@ -341,23 +348,32 @@ export function createWorker(config: WorkerConfig) {
           inflight.delete(entry.nonce);
           continue;
         }
-        if (await findTransaction(entry.hash) == null) {
-          await republish(entry, latest);
+        const missing = await findTransaction(entry.hash) == null;
+        if (latest < entry.submittedBlock + REPLACEMENT_DELAY) {
+          if (missing) await republish(entry);
           continue;
         }
-        if (latest < entry.submittedBlock + REPLACEMENT_DELAY) continue;
         const bumped = replacementPrice(entry.gasPrice, cap);
         if (bumped == null || !entry.canResign || entry.to == null) {
-          await republish(entry, latest);
+          await republish(entry);
           continue;
         }
-        if (entry.requestId != null && !(await simulateReplacement(entry, bumped))) continue;
+        if (entry.requestId != null && !(await simulateReplacement(entry, bumped))) {
+          if (missing) await republish(entry);
+          continue;
+        }
         await publish({ ...entry, serialized: null, gasPrice: bumped, submittedBlock: latest });
       } catch (error) {
         if (error instanceof NonceSyncError) throw error;
       }
     }
     minedNonce = await minedCountOrThrow();
+    const pendingNonce = await pendingCountOrThrow();
+    unknownPending = inflight.size === 0 && pendingNonce > minedNonce;
+    if (unknownPending) {
+      nextNonce = null;
+      return;
+    }
     await fillGaps(minedNonce, price, latest);
     if (nextNonce == null) {
       const high = highestNonce();
@@ -424,6 +440,8 @@ export function createWorker(config: WorkerConfig) {
     async pollOnce(): Promise<PollResult[]> {
       const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
       const quoted = startPrice(await publicClient.getGasPrice(), await blockMinimum());
+      balance = await publicClient.getBalance({ address: account.address });
+      reserveCost = RESERVE_FULFILLS * FULFILL_GAS * quoted.price;
       await reconcile(latest, quoted.price, quoted.cap);
       const fromBlock = latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
       const [requestedLogs, fulfilledLogs, refundedLogs] = await Promise.all([
@@ -444,7 +462,7 @@ export function createWorker(config: WorkerConfig) {
         if (prior == null || log.blockNumber < prior) outcomeInScan.set(log.args.requestId, log.blockNumber);
       }
       for (const [id, outcomeBlock] of finished) {
-        if (outcomeBlock >= fromBlock && outcomeBlock <= latest && !outcomeInScan.has(id)) {
+        if (outcomeBlock > latest || (outcomeBlock >= fromBlock && !outcomeInScan.has(id))) {
           finished.delete(id);
           pending.set(id, { outcomeBlock: null });
         }
@@ -452,17 +470,17 @@ export function createWorker(config: WorkerConfig) {
       for (const [id, state] of pending) {
         const seen = outcomeInScan.get(id);
         if (seen != null) state.outcomeBlock = state.outcomeBlock == null || seen < state.outcomeBlock ? seen : state.outcomeBlock;
-        else if (state.outcomeBlock != null && state.outcomeBlock >= fromBlock && state.outcomeBlock <= latest) state.outcomeBlock = null;
+        else if (state.outcomeBlock != null && (state.outcomeBlock > latest || state.outcomeBlock >= fromBlock)) state.outcomeBlock = null;
       }
 
       const results: PollResult[] = [];
-      const ready: Ready[] = [];
+      const fulfillable: Fulfillable[] = [];
       for (const requestId of [...pending.keys()]) {
         const state = pending.get(requestId);
         if (!state) continue;
         try {
           const request = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId], blockTag: 'latest' });
-          if (request.status === 0) {
+          if (request.status === REQUEST_STATUS.NONE) {
             pending.delete(requestId);
             if (!reportedGone.has(requestId)) {
               reportedGone.add(requestId);
@@ -471,8 +489,8 @@ export function createWorker(config: WorkerConfig) {
             continue;
           }
           reportedGone.delete(requestId);
-          if (request.status === 2 || request.status === 3) {
-            const depth = BigInt(request.confirmations);
+          if (request.status === REQUEST_STATUS.FULFILLED || request.status === REQUEST_STATUS.REFUNDED) {
+            const depth = OUTCOME_DEPTH;
             const agedOut = state.outcomeBlock == null && !requestInWindow.has(requestId);
             if (agedOut || (state.outcomeBlock != null && latest >= state.outcomeBlock + depth)) {
               if (state.outcomeBlock != null) finished.set(requestId, state.outcomeBlock);
@@ -482,7 +500,7 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          if (request.status !== 1) {
+          if (request.status !== REQUEST_STATUS.PENDING) {
             results.push({ requestId, status: 'skipped' });
             continue;
           }
@@ -491,7 +509,7 @@ export function createWorker(config: WorkerConfig) {
             continue;
           }
           const [keyHash, , keyState] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
-          if (keyState === 0 || keyHash.toLowerCase() !== config.provingKey.keyHash.toLowerCase()) {
+          if (keyState === KEY_STATE.NONE || keyHash.toLowerCase() !== config.provingKey.keyHash.toLowerCase()) {
             results.push({ requestId, status: 'skipped' });
             continue;
           }
@@ -519,22 +537,22 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          ready.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime });
+          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime });
         } catch (error) {
           if (error instanceof NonceSyncError) throw error;
           results.push({ requestId, status: 'retry' });
         }
       }
-      ready.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
+      fulfillable.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
       let effective = 0n;
       const cost = RESERVE_FULFILLS * FULFILL_GAS * quoted.price;
-      if (ready.length > 0) {
+      if (fulfillable.length > 0) {
         let reserved = 0n;
         for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
-        effective = await publicClient.getBalance({ address: account.address }) - reserved;
+        effective = balance - reserved;
       }
-      for (const item of ready) {
-        if (inflight.size >= MAX_IN_FLIGHT || effective < cost) {
+      for (const item of fulfillable) {
+        if (unknownPending || inflight.size >= MAX_IN_FLIGHT || effective < cost) {
           results.push({ requestId: item.requestId, status: 'waiting' });
           continue;
         }
