@@ -3,17 +3,31 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { composeFulfillment, coordinatorAbi } from './coordinator.ts';
 import type { ProvingKey } from './proving-key.ts';
 
+/** Local copy of a drand beacon. Chain config is used only after it matches this pin. */
+export interface DrandPin {
+  publicKey: readonly [bigint, bigint, bigint, bigint];
+  genesis: bigint;
+  period: bigint;
+}
+
 export interface WorkerConfig {
   rpcUrl: string;
   coordinator: Address;
   chain: Chain;
   fulfillerPrivateKey: Hex;
   provingKey: ProvingKey;
-  relayUrl: string;
+  /** Required. Public key, genesis, and period pinned for this process. */
+  drandPin: DrandPin;
+  /** One relay. Ignored when `relayUrls` is non-empty. */
+  relayUrl?: string;
+  /** Tried in order. The first well-formed `/public/<round>` wins. */
+  relayUrls?: readonly string[];
   /** Ignored. Each poll scans `latest − 2,400 − 100` itself. */
   fromBlock?: bigint;
   nowSeconds?: () => bigint;
   fetch?: typeof globalThis.fetch;
+  /** Operator line. Defaults to stderr. Must not receive key material. */
+  report?: (line: string) => void;
 }
 export type PollResult = { requestId: Hex; status: 'waiting' | 'skipped' | 'retry' | 'submitted'; transactionHash?: Hex };
 
@@ -42,6 +56,35 @@ export function createWorker(config: WorkerConfig) {
   const broadcast = new Map<Hex, Hex>();
   const fetchRelay = config.fetch ?? globalThis.fetch;
   const now = config.nowSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
+  const report = config.report ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const relays = (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls : config.relayUrl ? [config.relayUrl] : []).map(url => url.replace(/\/$/, ''));
+  const reportedPin = new Set<number>();
+
+  function pinMatches(beacon: { publicKey: readonly bigint[]; genesis: bigint; period: bigint }): boolean {
+    if (beacon.genesis !== config.drandPin.genesis || beacon.period !== config.drandPin.period) return false;
+    if (beacon.publicKey.length !== 4) return false;
+    for (let i = 0; i < 4; i++) if (beacon.publicKey[i] !== config.drandPin.publicKey[i]) return false;
+    return true;
+  }
+
+  /** First well-formed round signature. A bad relay is skipped; a 64-byte signature stops the walk. */
+  async function fetchSignature(round: bigint): Promise<Hex> {
+    for (const relay of relays) {
+      try {
+        const response = await fetchRelay(`${relay}/public/${round}`, { signal: AbortSignal.timeout(10_000) });
+        if (!response.ok) continue;
+        const body: unknown = await response.json();
+        if (typeof body !== 'object' || body === null || !('round' in body) || !('signature' in body) || typeof body.signature !== 'string') continue;
+        if (BigInt(String(body.round)) !== round) continue;
+        const signature = body.signature.startsWith('0x') ? body.signature : `0x${body.signature}`;
+        if (!/^0x[0-9a-fA-F]{128}$/.test(signature)) continue;
+        return signature as Hex;
+      } catch {
+        // This relay timed out or was unreachable. Try the next one.
+      }
+    }
+    throw new Error('Beacon unavailable');
+  }
 
   async function logsFor(event: AbiEvent, fromBlock: bigint, toBlock: bigint): Promise<OutcomeLog[]> {
     if (toBlock < fromBlock) return [];
@@ -141,13 +184,22 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'skipped' });
             continue;
           }
+          const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
+          if (!pinMatches(beacon)) {
+            if (!reportedPin.has(request.drandConfigId)) {
+              reportedPin.add(request.drandConfigId);
+              report(`worker: drand config ${request.drandConfigId} pin mismatched`);
+            }
+            results.push({ requestId, status: 'skipped' });
+            continue;
+          }
           const confirmations = BigInt(request.confirmations);
           if (latest < BigInt(request.requestBlock) + confirmations) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
-          if (now() < beacon.genesis + (request.targetRound - 1n) * beacon.period) {
+          const roundTime = config.drandPin.genesis + (request.targetRound - 1n) * config.drandPin.period;
+          if (now() < roundTime) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
@@ -155,11 +207,7 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          const response = await fetchRelay(`${config.relayUrl.replace(/\/$/, '')}/public/${request.targetRound}`, { signal: AbortSignal.timeout(10_000) });
-          if (!response.ok) throw new Error('Beacon unavailable');
-          const body: unknown = await response.json();
-          if (typeof body !== 'object' || body === null || !('round' in body) || BigInt(String(body.round)) !== request.targetRound || !('signature' in body) || typeof body.signature !== 'string') throw new Error('Invalid beacon response');
-          const signature = (body.signature.startsWith('0x') ? body.signature : `0x${body.signature}`) as Hex;
+          const signature = await fetchSignature(request.targetRound);
           const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: request.requester, requestId, targetRound: request.targetRound, signature }, config.provingKey);
           const { request: simulated } = await publicClient.simulateContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature], account: wallet.account, type: 'legacy', gas: FULFILL_GAS, gasPrice: (await publicClient.getGasPrice()) || 1n });
           const transactionHash = await wallet.writeContract(simulated);

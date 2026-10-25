@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { describe, it } from 'node:test';
 import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
-import { createWorker, type PollResult } from '../src/worker.ts';
+import { createWorker, type DrandPin, type PollResult } from '../src/worker.ts';
 
 const rpcUrl = process.env.RSK_RPC_URL ?? 'http://127.0.0.1:4449';
 const chain = defineChain({ id: 33, name: 'Rootstock regtest', nativeCurrency: { name: 'Test RBTC', symbol: 'tRBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
@@ -82,6 +83,29 @@ function forRequest(results: PollResult[], requestId: Hex) {
   return results.find(item => item.requestId === requestId);
 }
 
+function pinOf(beacon: { publicKey: bigint[]; genesis: bigint; period: bigint }): DrandPin {
+  assert.equal(beacon.publicKey.length, 4);
+  const [a, b, c, d] = beacon.publicKey;
+  assert.ok(a !== undefined && b !== undefined && c !== undefined && d !== undefined);
+  return { publicKey: [a, b, c, d], genesis: beacon.genesis, period: beacon.period };
+}
+
+function listen(server: Server): Promise<string> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address == null || typeof address === 'string') { reject(new Error('relay port')); return; }
+      resolve(`http://127.0.0.1:${address.port}`);
+    });
+  });
+}
+
+async function closeServer(server: Server) {
+  if (!server.listening) return;
+  await new Promise<void>(resolve => server.close(() => resolve()));
+}
+
 describe('worker regtest', { concurrency: 1 }, () => {
   it('real rskj: waits frozen round, rejects simulation without a send, retries and fulfills from separate EOA, derives independent Go expected word, and keeps the id until the outcome is confirmations deep', { timeout: 180_000 }, async () => {
     await withRelay(18769, async relayUrl => {
@@ -98,7 +122,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const cursor = await head();
       assert.ok(cursor > requestReceipt.blockNumber, 'caller cursor is past the request block');
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, fromBlock: cursor, nowSeconds: () => now,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), fromBlock: cursor, nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -156,7 +180,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let relayCalls = 0;
       const before = await nonceOf(fulfiller.address);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         fetch: async (input, init) => { relayCalls++; return fetch(input, init); },
       });
@@ -182,12 +206,12 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const confirmations = Number(record.confirmations);
       const roundTime = beacon.genesis + (record.targetRound - 1n) * beacon.period;
       await mineBlocks(confirmations);
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, nowSeconds: () => roundTime });
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const submitted = await worker.pollOnce();
       assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
       await receipt(forRequest(submitted, requestId)!.transactionHash!);
       const before = await nonceOf(backup.address);
-      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, provingKey: key, relayUrl, nowSeconds: () => roundTime });
+      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const seen = await restarted.pollOnce();
       assert.equal(forRequest(seen, requestId)?.status, 'waiting');
       assert.equal(seen.some(item => item.status === 'submitted'), false);
@@ -198,6 +222,109 @@ describe('worker regtest', { concurrency: 1 }, () => {
       await mineBlocks(confirmations);
       const released = await restarted.pollOnce();
       assert.equal(released.some(item => item.requestId === requestId), false);
+    });
+  });
+
+  it('refuses every request when the drand pin mismatches, with one line and no transaction', { timeout: 180_000 }, async () => {
+    await fund([requester, fulfiller]);
+    const { coordinator, key, beacon } = await deployCoordinator();
+    const { requestId, record } = await requestRandomness(coordinator, `0x${'11'.repeat(32)}`);
+    const lines: string[] = [];
+    let fetched = 0;
+    const before = await nonceOf(fulfiller.address);
+    const worker = createWorker({
+      rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+      relayUrls: ['http://127.0.0.1:1', 'http://127.0.0.1:1', 'http://127.0.0.1:1'],
+      drandPin: { ...pinOf(beacon), period: beacon.period + 1n },
+      nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
+      fetch: async () => { fetched++; throw new Error('pin mismatch must not fetch'); },
+      report: line => lines.push(line),
+    });
+    const first = await worker.pollOnce();
+    assert.equal(forRequest(first, requestId)?.status, 'skipped');
+    assert.equal(forRequest(first, requestId)?.transactionHash, undefined);
+    assert.deepEqual(lines, [`worker: drand config ${record.drandConfigId} pin mismatched`]);
+    const line = lines[0] ?? '';
+    assert.equal(line.includes('0x'), false);
+    for (const word of fixture.drand.publicKey as string[]) assert.equal(line.includes(word.replace(/^0x/, '')), false);
+    assert.equal(line.includes(String(fixture.drand.secretKey).replace(/^0x/, '')), false);
+    assert.equal(line.includes(String(fixture.vectors[0].vrf.secretKey).replace(/^0x/, '')), false);
+    const second = await worker.pollOnce();
+    assert.equal(forRequest(second, requestId)?.status, 'skipped');
+    assert.equal(lines.length, 1, 'a pin mismatch is reported once per config');
+    assert.equal(fetched, 0);
+    assert.equal(await nonceOf(fulfiller.address), before);
+    const still = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+    assert.equal(still.status, 1);
+  });
+
+  it('uses the first good relay and fulfills with the Go signature', { timeout: 180_000 }, async () => {
+    await withRelay(18772, async relayUrl => {
+      const deadHits = [0, 0];
+      const dead = [0, 1].map(index => createServer((_req, res) => { deadHits[index]!++; res.writeHead(503); res.end(); }));
+      const urls = [await listen(dead[0]!), await listen(dead[1]!), relayUrl];
+      try {
+        await fund([requester, fulfiller]);
+        const { coordinator, key, beacon } = await deployCoordinator();
+        const { requestId, record } = await requestRandomness(coordinator, `0x${'22'.repeat(32)}`);
+        await mineBlocks(Number(record.confirmations));
+        const worker = createWorker({
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          relayUrls: urls, drandPin: pinOf(beacon),
+          nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
+        });
+        const submitted = await worker.pollOnce();
+        assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
+        assert.deepEqual(deadHits, [1, 1]);
+        const fulfilledReceipt = await receipt(forRequest(submitted, requestId)!.transactionHash!);
+        const context = fixture.vectors[0].derivations[0].context as Hex;
+        const expectedUrl = new URL(`${relayUrl}/expected`);
+        for (const [name, value] of Object.entries({ chainId: 33, round: record.targetRound, coordinator, requester: requester.address, requestId, context })) expectedUrl.searchParams.set(name, String(value));
+        const expected = await (await fetch(expectedUrl)).json() as { beta: Hex };
+        const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+        assert.equal(finalRecord.status, 2);
+        assert.equal(finalRecord.beta, expected.beta);
+        assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Fulfilled', logs: fulfilledReceipt.logs }).length, 1);
+      } finally {
+        await Promise.all(dead.map(closeServer));
+      }
+    });
+  });
+
+  it('stops at the first well-formed relay and does not call the later ones', { timeout: 180_000 }, async () => {
+    await withRelay(18773, async relayUrl => {
+      let proxyHits = 0;
+      const proxy = createServer((req, res) => {
+        proxyHits++;
+        fetch(`${relayUrl}${req.url ?? ''}`).then(async response => {
+          const body = Buffer.from(await response.arrayBuffer());
+          res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' });
+          res.end(body);
+        }).catch(() => { res.writeHead(502); res.end(); });
+      });
+      const laterHits = [0, 0];
+      const later = [0, 1].map(index => createServer((_req, res) => { laterHits[index]!++; res.writeHead(503); res.end(); }));
+      const urls = [await listen(proxy), await listen(later[0]!), await listen(later[1]!)];
+      try {
+        await fund([requester, fulfiller]);
+        const { coordinator, key, beacon } = await deployCoordinator();
+        const { requestId, record } = await requestRandomness(coordinator, `0x${'33'.repeat(32)}`);
+        await mineBlocks(Number(record.confirmations));
+        const worker = createWorker({
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          relayUrls: urls, drandPin: pinOf(beacon),
+          nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
+        });
+        const submitted = await worker.pollOnce();
+        assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
+        assert.equal(proxyHits, 1);
+        assert.deepEqual(laterHits, [0, 0]);
+        await receipt(forRequest(submitted, requestId)!.transactionHash!);
+        const finalRecord = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] });
+        assert.equal(finalRecord.status, 2);
+      } finally {
+        await Promise.all([proxy, ...later].map(closeServer));
+      }
     });
   });
 });
