@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"math/big"
@@ -303,6 +304,11 @@ func render(f File) ([]byte, error) {
 }
 
 func main() {
+	testRelay := flag.String("test-relay", "", "serve public test-key drand rounds on a loopback host:port")
+	flag.Parse()
+	if *testRelay != "" {
+		log.Fatal(serveTestRelay(*testRelay))
+	}
 	file, err := Generate()
 	if err != nil {
 		log.Fatal(err)

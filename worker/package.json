@@ -11,12 +11,15 @@
   },
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "node --test integration/regtest.test.ts",
+    "start": "node src/run.ts"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "3.1156.0",
     "@noble/curves": "2.4.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "viem": "2.57.11"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

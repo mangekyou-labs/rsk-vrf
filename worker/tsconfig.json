@@ -3,8 +3,12 @@
     "target": "es2024",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["es2024"],
-    "types": ["node"],
+    "lib": [
+      "es2024"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
@@ -13,5 +17,9 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test",
+    "integration"
+  ]
 }
