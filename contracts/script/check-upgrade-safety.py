@@ -78,8 +78,11 @@ def extract():
                 if node.get('nodeType') == 'VariableDeclarationStatement' and any(d and d['id'] == declaration['id'] for d in node['declarations']):
                     return evaluate(node['initialValue'], seen)
         if kind == 'FunctionCall':
-            if expression.get('kind') == 'typeConversion' and len(expression.get('arguments', [])) == 1:
-                return evaluate(expression['arguments'][0], seen)
+            if expression.get('kind') == 'typeConversion':
+                target = expression['expression'].get('typeName', {}).get('name')
+                if target in ['bytes32', 'uint256'] and len(expression.get('arguments', [])) == 1:
+                    return evaluate(expression['arguments'][0], seen)
+                raise ValueError('Storage accessor cast is unsupported; review the layout extractor')
             function = nodes[expression['expression']['referencedDeclaration']]
             # Respect the most-derived implementation of a virtual slot getter.
             function = next((f for cid in coordinator['linearizedBaseContracts'] for f in nodes[cid]['nodes'] if f.get('nodeType') == 'FunctionDefinition' and f.get('name') == function['name'] and f.get('body')), function)
