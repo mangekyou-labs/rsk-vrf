@@ -133,11 +133,16 @@ it('real rskj: full callback caps, isolated failures and reserve boundaries', { 
     for (const cap of [25_000, 2_500_000]) {
       let pending = await request(cap, 0);
       // Force a multi-try proof so a fixed verification allowance fails this gate.
-      while (pending.composed.hashToCurveTries < 2) pending = await request(cap, 0);
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, fromBlock: pending.fromBlock, nowSeconds: () => beacon.genesis + (pending.record.targetRound - 1n) * beacon.period });
+      while (pending.composed.hashToCurveTries < 2) {
+        await receipt(await fulfillerWallet.writeContract({ address: coordinator, abi: implementation.abi, functionName: 'fulfill', args: [pending.requestId, pending.composed.proof, pending.composed.drandSignature], gas: 4_000_000n, gasPrice: 1n }));
+        await verifySettled(pending.requestId, pending.composed.beta);
+        pending = await request(cap, 0);
+      }
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: { ...beacon, publicKey: beacon.publicKey as [bigint, bigint, bigint, bigint] }, nowSeconds: () => beacon.genesis + (pending.record.targetRound - 1n) * beacon.period });
       const result = await worker.pollOnce();
-      assert.equal(result[0]?.status, 'submitted');
-      const hash = result[0]!.transactionHash!;
+      const submitted = result.find(entry => entry.requestId === pending.requestId);
+      assert.equal(submitted?.status, 'submitted');
+      const hash = submitted!.transactionHash!;
       assert.equal((await client.getTransaction({ hash })).gas, 652_000n + 20_000n * BigInt(pending.composed.hashToCurveTries - 1) + BigInt(cap), 'worker reserves full frozen cap even for a cheap callback');
       await receipt(hash);
       await verifySettled(pending.requestId, pending.composed.beta);
