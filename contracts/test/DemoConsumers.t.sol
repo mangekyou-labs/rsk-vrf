@@ -91,7 +91,7 @@ contract DemoConsumersTest is CoordinatorVectorFixture {
         VRFCoordinator.Request memory r = coordinator.getRequest(v.requestId);
         assertEq(uint8(r.status), uint8(VRFCoordinator.Status.Fulfilled));
         assertEq(r.beta, v.beta);
-        assertEq(coordinator.payeeBalance(payee), 2e13, "fee settles despite the failed callback");
+        assertEq(coordinator.payeeBalance(payee), 2e13, "the fee is credited to the Payee despite the failed callback");
 
         vm.prank(payee);
         coordinator.withdrawFees();

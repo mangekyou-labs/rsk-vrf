@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createPublicClient, createWalletClient, decodeErrorResult, defineChain, http, parseEventLogs,
+  concat, createPublicClient, createWalletClient, decodeErrorResult, decodeFunctionData, defineChain, encodeAbiParameters,
+  encodeFunctionData, http, keccak256, pad, parseEventLogs, sha256, stringToHex, toHex,
   type Abi, type Address, type Hex, type TransactionReceipt,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -27,6 +28,60 @@ export function artifact(name: string): { abi: Abi; bytecode: Hex } {
 }
 
 export const coordinatorAbi = artifact('VRFCoordinator').abi;
+
+/** The evmnet drand chain on the public relay; DRAND_RELAY_URL overrides it. */
+export const EVMNET_RELAY = 'https://api.drand.sh/04f1e9062b8a81f848fded9c12306733282b2727ecced50032187751166ec8c3';
+
+export function drandRelay(): string {
+  return (process.env.DRAND_RELAY_URL ?? EVMNET_RELAY).replace(/\/$/, '');
+}
+
+/** VRF.sol's Proof struct as viem decodes it from fulfill calldata. */
+export interface OnChainProof {
+  pk: readonly [bigint, bigint]; gamma: readonly [bigint, bigint]; c: bigint; s: bigint; seed: bigint; uWitness: Address;
+  cGammaWitness: readonly [bigint, bigint]; sHashWitness: readonly [bigint, bigint]; zInv: bigint;
+}
+
+/** A drand BLS signature on BN254, as fulfill takes it. */
+export type Signature = readonly [bigint, bigint];
+
+/** The arguments of a fulfill transaction's calldata. */
+export function decodeFulfill(input: Hex): { requestId: Hex; proof: OnChainProof; signature: Signature } {
+  const [requestId, proof, signature] = decodeFunctionData({ abi: coordinatorAbi, data: input }).args as unknown as [Hex, OnChainProof, Signature];
+  return { requestId, proof, signature };
+}
+
+/** fulfill calldata for a request, proof and drand signature. */
+export function encodeFulfill(requestId: Hex, proof: OnChainProof, signature: Signature): Hex {
+  return encodeFunctionData({ abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, proof as never, signature as never] });
+}
+
+const word = (n: bigint) => pad(toHex(n), { size: 32 });
+
+/**
+ * Alpha as the coordinator builds it: keccak256(abi.encode("rsk-vrf/v1/alpha" domain,
+ * chainId, coordinator, requester, requestId, targetRound, sha256(drand signature))).
+ */
+export function alphaOf(input: { chainId: number; coordinator: Address; requester: Address; requestId: Hex; targetRound: bigint; signature: Signature }): Hex {
+  const randomness = sha256(concat([word(input.signature[0]), word(input.signature[1])]));
+  return keccak256(encodeAbiParameters(
+    [{ type: 'bytes32' }, { type: 'uint256' }, { type: 'address' }, { type: 'address' }, { type: 'bytes32' }, { type: 'uint64' }, { type: 'bytes32' }],
+    [keccak256(stringToHex('rsk-vrf/v1/alpha')), BigInt(input.chainId), input.coordinator, input.requester, input.requestId, input.targetRound, randomness],
+  ));
+}
+
+/** The drand signature a relay publishes for a round, waiting up to `attempts` polls for it. */
+export async function drandSignature(relay: string, round: bigint, attempts = 200): Promise<Signature> {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(`${relay}/public/${round}`).catch(() => undefined);
+    if (response?.ok) {
+      const hex = ((await response.json()) as { signature: string }).signature.replace(/^0x/, '');
+      return [BigInt(`0x${hex.slice(0, 64)}`), BigInt(`0x${hex.slice(64, 128)}`)];
+    }
+    if (attempt + 1 >= attempts) throw new Error(`${relay} has no round ${round}`);
+    await sleep(3_000);
+  }
+}
 
 function required(name: string): string {
   const value = process.env[name];
@@ -68,7 +123,7 @@ export async function connect(script: string) {
   // Regtest mines only on request, so there the demo mines its own blocks.
   const regtest = chainId === REGTEST;
 
-  async function tick() {
+  async function nextBlock() {
     if (regtest) await client.request({ method: 'evm_mine' as never, params: [] as never });
     else await sleep(Number(process.env.POLL_MS ?? 10_000));
   }
@@ -90,7 +145,7 @@ export async function connect(script: string) {
     for (;;) {
       const found = await client.getTransactionReceipt({ hash }).catch(() => undefined);
       if (found) return found;
-      await tick();
+      await nextBlock();
     }
   }
 
@@ -103,7 +158,24 @@ export async function connect(script: string) {
   }
 
   async function untilBlock(n: bigint) {
-    while (await client.getBlockNumber() < n) await tick();
+    while (await client.getBlockNumber() < n) await nextBlock();
+  }
+
+  /** Calls a coordinator view, optionally at a past block. */
+  async function read<T = unknown>(functionName: string, args: readonly unknown[] = [], blockNumber?: bigint): Promise<T> {
+    return await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName, args, blockNumber } as never) as T;
+  }
+
+  /** The coordinator's current fee in wei. */
+  const fee = () => read<bigint>('fee');
+
+  /** Has the sender request randomness for a tag with no callback, paying the exact fee. */
+  async function request(tag: string): Promise<{ requestId: Hex; receipt: TransactionReceipt }> {
+    const data = encodeFunctionData({ abi: coordinatorAbi, functionName: 'request', args: [stringToHex(tag, { size: 32 })] });
+    const receipt = await send(`request ${tag}`, { to: coordinator, data, value: await fee(), gas: 400_000n });
+    const requestId = requested(receipt);
+    console.log(`requestId ${requestId}`);
+    return { requestId, receipt };
   }
 
   async function getRequest(requestId: Hex) {
@@ -134,7 +206,7 @@ export async function connect(script: string) {
       }
       if (request.status === Status.Refunded) throw new Error(`${requestId} was refunded`);
       if (await client.getBlockNumber() > BigInt(request.deadline)) throw new Error(`${requestId} passed its deadline unfulfilled`);
-      await tick();
+      await nextBlock();
     }
   }
 
@@ -154,7 +226,7 @@ export async function connect(script: string) {
     throw new Error(`${hash} does not revert when replayed`);
   }
 
-  return { chainId, client, wallet, account, coordinator, regtest, tick, broadcast, mined, send, untilBlock, getRequest, requested, waitFulfilled, revertOf, link: (hash: Hex) => txLink(chainId, hash) };
+  return { chainId, client, wallet, account, coordinator, regtest, nextBlock, broadcast, mined, send, untilBlock, read, fee, request, getRequest, requested, waitFulfilled, revertOf, link: (hash: Hex) => txLink(chainId, hash) };
 }
 
 function findRevertData(error: unknown): Hex | undefined {

@@ -5,8 +5,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createPublicClient, createWalletClient, defineChain, encodeAbiParameters, http, keccak256, stringToHex, type Abi, type Address, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeAbiParameters, http, keccak256, stringToHex, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { artifact, coordinatorAbi, type OnChainProof, type Signature } from '../demo/lib.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 import { createWorker } from '../src/worker.ts';
 
@@ -28,8 +29,6 @@ const workerDir = fileURLToPath(new URL('../', import.meta.url));
 const contractsDir = fileURLToPath(new URL('../../contracts/', import.meta.url));
 const deploymentsDir = fileURLToPath(new URL('../../deployments/', import.meta.url));
 const fixture = JSON.parse(readFileSync(new URL('../../tools/vrf-vectors-go/coordinator-vectors.json', import.meta.url), 'utf8'));
-const artifact = (name: string) => JSON.parse(readFileSync(new URL(`../../contracts/out/${name}.sol/${name}.json`, import.meta.url), 'utf8')) as { abi: Abi; bytecode: { object: Hex } };
-const coordinatorAbi = artifact('VRFCoordinator').abi;
 const relayPort = 18780;
 const relayUrl = `http://127.0.0.1:${relayPort}`;
 const beacon = { publicKey: fixture.drand.publicKey.map(BigInt) as [bigint, bigint, bigint, bigint], genesis: BigInt(fixture.drand.genesis), period: BigInt(fixture.drand.period) };
@@ -61,6 +60,7 @@ let relay: ChildProcess | undefined;
 let coordinator: Address;
 let safe: Address;
 let stopWorker = () => Promise.resolve();
+let revertingRequestId: Hex | undefined;
 
 /** Runs a demo script the way a reader would, with only the documented environment. */
 async function demo(script: string, env: Record<string, string> = {}) {
@@ -83,7 +83,7 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
       await receipt(await wallet.sendTransaction({ to, value: 10n ** 19n, gas: 21_000n, gasPrice: 1n }));
     }
     const standIn = artifact('SafeStandIn');
-    safe = (await receipt(await wallet.deployContract({ abi: standIn.abi, bytecode: standIn.bytecode.object, args: [signer.address], gas: 1_000_000n, gasPrice: 1n }))).contractAddress!;
+    safe = (await receipt(await wallet.deployContract({ abi: standIn.abi, bytecode: standIn.bytecode, args: [signer.address], gas: 1_000_000n, gasPrice: 1n }))).contractAddress!;
     const key = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey);
     const [x, y] = key.publicKey;
     mkdirSync(deploymentsDir, { recursive: true });
@@ -164,11 +164,12 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     assertPresented(output, [result.requestTx, result.fulfillTx]);
   });
 
-  it('reverting consumer: the callback fails with CallbackFailed, the fee settles and the Payee withdraws it', { timeout: 120_000 }, async () => {
+  it('reverting consumer: the callback fails with CallbackFailed, the fee is credited to the Payee and the Payee withdraws it', { timeout: 120_000 }, async () => {
     const before = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'payeeBalance', args: [safe] }) as bigint;
     const reverting = await demo('reverting-consumer');
     assert.equal(reverting.code, 0, reverting.output);
     const { requestId, fulfillTx } = reverting.result as { requestId: Hex; fulfillTx: Hex };
+    revertingRequestId = requestId;
     const stored = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] }) as { status: number; fee: bigint };
     assert.equal(stored.status, 2, 'Fulfilled although the callback reverted');
     const callbackFailed = keccak256(stringToHex('CallbackFailed(bytes32)'));
@@ -179,7 +180,7 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     assertPresented(reverting.output, [reverting.result.deployTx, reverting.result.requestTx, fulfillTx]);
 
     // The Payee is the Admin Safe here; the script cannot sign for it, so it prints the call.
-    const instructions = await demo('withdraw-fees');
+    const instructions = await demo('withdraw-fees', { REQUEST_ID: requestId });
     assert.equal(instructions.code, 3, instructions.output);
     assert.ok(instructions.output.toLowerCase().includes(safe.toLowerCase()), 'names the Payee');
     assert.ok(instructions.output.includes('0x476343ee'), 'gives the withdrawFees() calldata');
@@ -189,7 +190,7 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     const withdrawn = await receipt(await wallet.writeContract({ address: safe, abi: artifact('SafeStandIn').abi, functionName: 'execute', args: [coordinator, withdrawFees], gas: 200_000n, gasPrice: 1n }));
     assert.equal(await client.getBalance({ address: safe }), safeBalance + credited);
 
-    const verified = await demo('withdraw-fees', { WITHDRAW_TX: withdrawn.transactionHash });
+    const verified = await demo('withdraw-fees', { REQUEST_ID: requestId, WITHDRAW_TX: withdrawn.transactionHash });
     assert.equal(verified.code, 0, verified.output);
     assert.equal(BigInt(verified.result.amount), credited);
     assert.equal(verified.result.payee.toLowerCase(), safe.toLowerCase());
@@ -208,36 +209,59 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     const expected = await (await fetch(`${relayUrl}/expected?${query}`)).json() as { beta: Hex; alpha: Hex };
     assert.equal(expected.beta, stored.beta, 'the Go prover derives the same Beta');
     assert.equal(result.alpha, expected.alpha);
+    assert.equal(result.proofVerified, true, 'the demo\'s own ECVRF verifier accepts the on-chain proof over the recomputed Alpha');
     assert.equal(result.goVerified, true, 'the Go verifier accepts the on-chain proof');
     assert.equal(result.proversMatch, true, 'the Go proof bytes equal the noble proof on chain');
     assertPresented(output, [result.fulfillTx]);
   });
 
-  it('rejections: invalid, mismatched and repeated fulfillments are mined and reverted with their errors', { timeout: 180_000 }, async () => {
+  it('rejections: invalid, mismatched and repeated fulfillments are mined and reverted, each for its one reason', { timeout: 180_000 }, async () => {
     const { code, output, result } = await demo('rejections');
     assert.equal(code, 0, output);
-    const expected: Record<string, string> = {
-      'corrupted gamma': 'gamma is not on curve',
-      'corrupted s': 'addr(c*pk+s*g)!=_uWitness',
-      "A's proof on B": 'Second mul check failed',
-      'wrong drand round': 'InvalidDrandSignature',
-      'repeat on Fulfilled A': 'RequestNotPending(2)',
-    };
-    const rejections = result.rejections as { case: string; tx: Hex; error: string }[];
-    assert.deepEqual(Object.fromEntries(rejections.map(r => [r.case, r.error])), expected);
+    assert.equal(result.isolated, true, 'regtest has the public test key, so every case on B is isolated');
+    const rejections = result.rejections as { case: string; tx: Hex; expected: string; error: string }[];
+    assert.deepEqual(rejections.map(r => r.case), ['corrupted gamma', 'corrupted s', "A's proof on B", 'wrong drand round', 'repeat on Fulfilled A']);
+    for (const r of rejections) assert.equal(r.error, r.expected, `${r.case} reverted with the script's expected error`);
+
+    // Isolation, checked against the operator's own fulfillment of B: each case on B is
+    // that valid fulfillment with exactly one thing changed.
+    const decode = async (hash: Hex) => decodeFunctionData({ abi: coordinatorAbi, data: (await client.getTransaction({ hash })).input }).args as unknown as [Hex, OnChainProof, Signature];
+    const [idB, proofB, signatureB] = await decode(result.fulfillTxB);
+    const [, proofA] = await decode(result.fulfillTxA);
+    const sent = Object.fromEntries(await Promise.all(rejections.map(async r => [r.case, await decode(r.tx)] as const)));
+    assert.deepEqual(sent['corrupted gamma'], [idB, { ...proofB, gamma: [proofB.gamma[0] + 1n, proofB.gamma[1]] }, signatureB]);
+    assert.deepEqual(sent['corrupted s'], [idB, { ...proofB, s: proofB.s + 1n }, signatureB]);
+    assert.deepEqual(sent["A's proof on B"], [idB, proofA, signatureB]);
+    const [wrongId, wrongProof, wrongSignature] = sent['wrong drand round']!;
+    assert.deepEqual([wrongId, wrongProof], [idB, proofB], 'the wrong round carries B\'s valid proof');
+    assert.notDeepEqual(wrongSignature, signatureB);
+
     const fulfilledB = await client.getTransactionReceipt({ hash: result.fulfillTxB });
     for (const rejection of rejections) {
       const mined = await client.getTransactionReceipt({ hash: rejection.tx });
       assert.equal(mined.status, 'reverted', `${rejection.case} was mined and reverted`);
       assert.ok(mined.blockNumber < fulfilledB.blockNumber, `${rejection.case} landed while B was still Pending`);
-      const sent = await client.getTransaction({ hash: rejection.tx });
-      assert.equal(sent.to?.toLowerCase(), coordinator.toLowerCase());
+      const tx = await client.getTransaction({ hash: rejection.tx });
+      assert.equal(tx.to?.toLowerCase(), coordinator.toLowerCase());
     }
     for (const id of [result.requestIdA, result.requestIdB] as Hex[]) {
       const stored = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [id] }) as { status: number };
       assert.equal(stored.status, 2, 'the rejections changed nothing: both requests end Fulfilled by the operator');
     }
     assertPresented(output, rejections.map(r => r.tx));
+  });
+
+  // Last: it registers a new Active key, which the worker does not hold.
+  it('withdraw fees: names the Payee of the key that served the request, not the Active key\'s', { timeout: 60_000 }, async () => {
+    assert.ok(revertingRequestId, 'the reverting consumer test ran first');
+    const otherKey = privateKeyToAccount(`0x${'3c'.repeat(32)}`).publicKey;
+    const otherPayee = '0x000000000000000000000000000000000000dEaD';
+    const pk = [BigInt(`0x${otherKey.slice(4, 68)}`), BigInt(`0x${otherKey.slice(68)}`)] as const;
+    await receipt(await deployerWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'registerProvingKey', args: [pk, otherPayee], gas: 300_000n, gasPrice: 1n }));
+    const instructions = await demo('withdraw-fees', { REQUEST_ID: revertingRequestId });
+    assert.equal(instructions.code, 3, instructions.output);
+    assert.ok(instructions.output.toLowerCase().includes(safe.toLowerCase()), 'names the Safe, the Payee of the key that served the request');
+    assert.ok(!instructions.output.toLowerCase().includes(otherPayee.toLowerCase()), 'not the new Active key\'s Payee');
   });
 });
 
