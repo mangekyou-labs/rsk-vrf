@@ -1,0 +1,5 @@
+bucket       = "<state-bucket>"
+key          = "rsk-vrf/infra.tfstate"
+region       = "eu-central-1"
+encrypt      = true
+use_lockfile = true

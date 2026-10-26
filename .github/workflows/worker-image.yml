@@ -44,4 +44,4 @@ jobs:
       - name: Record the digest to pin
         if: env.PUSH == 'true'
         run: |
-          echo "Pin hosts to \`${IMAGE}@${{ steps.build.outputs.digest }}\` (SSM parameter \`/rsk-vrf/<worker>/image\`)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin hosts to \`${IMAGE}@${{ steps.build.outputs.digest }}\` (Terraform variable \`worker_image\`, see infra/README.md)." >> "$GITHUB_STEP_SUMMARY"
