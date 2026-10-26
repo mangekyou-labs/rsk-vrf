@@ -76,7 +76,7 @@ contract DeployTest is Test {
 
     function handOff(DeployCoordinator.Deployment memory d) internal {
         vm.prank(signer);
-        SafeStandIn(safe).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
+        SafeStandIn(payable(safe)).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
     }
 
     function planned(DeployCoordinator.Deployment memory d)
@@ -106,7 +106,7 @@ contract DeployTest is Test {
 
     function asSafe(address target, bytes memory data) internal {
         vm.prank(signer);
-        SafeStandIn(safe).execute(target, data);
+        SafeStandIn(payable(safe)).execute(target, data);
     }
 
     function test_CheckFailsBeforeTheSafeAccepts() public {
@@ -273,7 +273,7 @@ contract DeployTest is Test {
         address wrongSafe = address(new SafeStandIn(signer));
         DeployCoordinator.Deployment memory d = script.deploy(inputs(wrongSafe));
         vm.prank(signer);
-        SafeStandIn(wrongSafe).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
+        SafeStandIn(payable(wrongSafe)).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
         string memory json = script.record(d, inputs(wrongSafe));
         CheckDeployment checker = new CheckDeployment();
 
