@@ -337,8 +337,15 @@ describe('watchdog on real rskj', { concurrency: 1 }, () => {
       await receipt(await wallet.writeContract({ address: setup.coordinator, abi: parseAbi(['function timeoutRefund(bytes32 requestId)']), functionName: 'timeoutRefund', args: [pending.requestId], gas: 300_000n, gasPrice: 1n }));
       const config = workerConfig(setup, url, `0x${'9f'.repeat(32)}`);
       config.relayUrl = relayUrl;
-      await createWorker(config).pollOnce();
-      assert.ok(found(alerts, 'missed_deadline', 'page').proof, 'refund cannot hide withheld proof');
+      let available = false;
+      config.fetch = async (input, init) => available ? fetch(input, init) : new Response('offline', { status: 503 });
+      const worker = createWorker(config);
+      await mineTo(BigInt(pending.record.deadline) + 20n);
+      await worker.pollOnce();
+      assert.equal(found(alerts, 'missed_deadline', 'page').proof, null);
+      available = true;
+      await worker.pollOnce();
+      assert.ok(alerts.some(alert => alert.event === 'missed_deadline' && alert.proof), 'deep refund retains incident until withheld proof can be published');
     }));
   });
 

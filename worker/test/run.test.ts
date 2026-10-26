@@ -5,14 +5,14 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { assertNoSecret } from './secret.ts';
 
-const startup = 'worker: startup failed; check configuration, RPC and Secrets Manager access\n';
+const startup = '{"level":"error","event":"startup_failed","message":"Check configuration, RPC and Secrets Manager access"}\n';
 const pinWord = `0x${'ab'.repeat(32)}`;
 const fulfillerKey = `0x${'22'.repeat(32)}`;
 
 function runWorker(env: Record<string, string | undefined>) {
   const child = spawn(process.execPath, ['src/run.ts'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
-    env: { PATH: process.env.PATH, ...env },
+    env: { PATH: process.env.PATH, WORKER_ID: 'test', ALERT_PAGE_URL: 'http://127.0.0.1:1/page', ALERT_WARNING_URL: 'http://127.0.0.1:1/warn', HEALTHCHECKS_PING_URL: 'http://127.0.0.1:1/heartbeat', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
