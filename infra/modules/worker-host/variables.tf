@@ -29,6 +29,11 @@ variable "worker_image" {
   type = string
 }
 
+variable "worker_repository" {
+  description = "ghcr.io/<owner>/rsk-vrf-worker. The host runs only a digest of this repository."
+  type        = string
+}
+
 variable "coordinator_address" {
   type = string
 }

@@ -33,13 +33,24 @@ variable "data_volume_gb" {
   default     = 250
 }
 
+variable "ghcr_owner" {
+  description = "GitHub owner whose GHCR rsk-vrf-worker image the hosts run. Hosts refuse any other image."
+  type        = string
+  default     = "mangekyou-labs"
+
+  validation {
+    condition     = can(regex("^[a-z0-9-]+$", var.ghcr_owner))
+    error_message = "ghcr_owner must be a lowercase GitHub owner name."
+  }
+}
+
 variable "worker_image" {
   description = "Worker image pinned by digest, as printed by the Worker image workflow."
   type        = string
 
   validation {
-    condition     = can(regex("^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$", var.worker_image))
-    error_message = "worker_image must be a ghcr.io image pinned by digest (…@sha256:<64 hex>)."
+    condition     = can(regex("^ghcr\\.io/${var.ghcr_owner}/rsk-vrf-worker@sha256:[0-9a-f]{64}$", var.worker_image))
+    error_message = "worker_image must be ghcr.io/<ghcr_owner>/rsk-vrf-worker@sha256:<64 hex>."
   }
 }
 

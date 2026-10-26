@@ -1,4 +1,6 @@
 # Copy to terraform.tfvars. Nothing here is secret: secrets are set out of band.
+# The hosts run only ghcr.io/<ghcr_owner>/rsk-vrf-worker@sha256:<digest>.
+# ghcr_owner        = "mangekyou-labs"
 worker_image        = "ghcr.io/mangekyou-labs/rsk-vrf-worker@sha256:<digest from the Worker image workflow>"
 coordinator_address = "0x<VRF Coordinator on chain 31>"
 
