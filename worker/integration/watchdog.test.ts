@@ -59,7 +59,7 @@ async function sinks(body: (alerts: Alert[], url: string) => Promise<void>) {
   const url = await listen(server);
   try { await body(alerts, url); } finally { await close(server); }
 }
-function workerConfig(setup: Awaited<ReturnType<typeof deploy>>, url: string, privateKey: Hex): WorkerConfig {
+function workerConfig(setup: Awaited<ReturnType<typeof deploy>>, url: string, privateKey: Hex): WorkerConfig & { fulfillerPrivateKey: Hex } {
   return { rpcUrl, coordinator: setup.coordinator, chain, fulfillerPrivateKey: privateKey, loadProvingKey: async hash => hash.toLowerCase() === setup.key.keyHash ? setup.key : undefined, drandPin: setup.pin, relayUrl: 'http://127.0.0.1:1', watchdog: { workerId: 'primary', pageUrl: `${url}/page`, warningUrl: `${url}/warn` }, report: () => {} };
 }
 function found(alerts: Alert[], event: string, level: string) { const alert = alerts.find(item => item.event === event && item.level === level); assert.ok(alert, `received ${level} ${event}`); return alert; }

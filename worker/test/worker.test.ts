@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { it } from 'node:test';
-import { decodeFunctionData, defineChain, encodeAbiParameters, encodeEventTopics, encodeFunctionResult, keccak256, parseTransaction, toHex, type Hex } from 'viem';
+import { decodeFunctionData, defineChain, encodeAbiParameters, encodeEventTopics, encodeFunctionResult, keccak256, parseTransaction, recoverTransactionAddress, toHex, type Hex, type TransactionSerializedLegacy } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
-import { createWorker } from '../src/worker.ts';
+import { createWorker, type WorkerConfig } from '../src/worker.ts';
 const golden = JSON.parse(readFileSync(new URL('../../tools/vrf-vectors-go/coordinator-vectors.json', import.meta.url), 'utf8'));
 const key = ProvingKey.fromHex(golden.vectors[0].vrf.secretKey);
 const address = `0x${'11'.repeat(20)}` as const;
@@ -60,9 +60,17 @@ async function setup() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const rpcUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const chain = defineChain({ id: 33, name: 'test', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  const makeWorker = () => createWorker({ rpcUrl, coordinator: address, chain, fulfillerPrivateKey: `0x${'34'.repeat(32)}`, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
+  const makeWorker = (fulfiller: Partial<Pick<WorkerConfig, 'fulfillerPrivateKey' | 'fulfillerAccount'>> = { fulfillerPrivateKey: `0x${'34'.repeat(32)}` }) => createWorker({ rpcUrl, coordinator: address, chain, ...fulfiller, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
   return { state, server, makeWorker };
 }
+it('signs fulfillments with an injected Fulfiller account such as the KMS one', () => scenario(async ({ state, makeWorker }) => {
+  const signer = privateKeyToAccount(`0x${'56'.repeat(32)}`);
+  const signed: unknown[] = [];
+  const account = { ...signer, signTransaction: (tx: Parameters<typeof signer.signTransaction>[0]) => { signed.push(tx); return signer.signTransaction(tx); } };
+  assert.equal((await makeWorker({ fulfillerAccount: account }).pollOnce())[0]?.status, 'submitted');
+  assert.equal(signed.length, 1);
+  assert.equal(await recoverTransactionAddress({ serializedTransaction: state.sent[0] as TransactionSerializedLegacy }), signer.address);
+}));
 it('keeps an outcome pending for twelve blocks regardless of request confirmation wait', () => scenario(async ({ state, makeWorker }) => {
   state.status = 2; state.outcome = 100n;
   const worker = makeWorker(); assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
