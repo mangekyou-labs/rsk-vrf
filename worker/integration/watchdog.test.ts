@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseAbi, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
+import { runWorkerLoop } from '../src/loop.ts';
 import { createWorker, type DrandPin, type WorkerConfig } from '../src/worker.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 import { encodeProof, type Proof } from '../src/vrf/prover.ts';
@@ -248,6 +249,42 @@ describe('watchdog on real rskj', { concurrency: 1 }, () => {
         syncing = false;
         await worker.pollOnce();
       } finally { await close(proxy); }
+    });
+  });
+
+  it('stops the healthchecks.io heartbeat when the node stops answering', { timeout: 180_000 }, async () => {
+    await sinks(async (_alerts, url) => {
+      const setup = await deploy();
+      let broken = false;
+      const proxy = createServer(async (req, res) => {
+        let raw = ''; for await (const chunk of req) raw += String(chunk);
+        if (broken) { res.statusCode = 503; res.end('node unavailable'); return; }
+        res.setHeader('content-type', 'application/json');
+        const upstream = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw });
+        res.end(await upstream.text());
+      });
+      const proxyUrl = await listen(proxy);
+      const pings: string[] = [];
+      const ping = createServer((req, res) => { pings.push(req.url ?? ''); res.end('ok'); });
+      const pingUrl = await listen(ping);
+      try {
+        const config = workerConfig(setup, url, `0x${'9d'.repeat(32)}`);
+        config.rpcUrl = proxyUrl;
+        const worker = createWorker(config);
+        const stop = new AbortController();
+        let clock = 0;
+        let rounds = 0;
+        const running = runWorkerLoop({
+          pollOnce: () => worker.pollOnce(),
+          heartbeat: async () => { await fetch(`${pingUrl}/ping`); },
+          signal: stop.signal,
+          report: () => {},
+          nowMilliseconds: () => clock,
+          sleep: async () => { clock += 60_000; if (++rounds === 2) broken = true; if (rounds === 4) stop.abort(); },
+        });
+        await running;
+        assert.deepEqual(pings, ['/ping', '/ping'], 'heartbeats follow healthy polls and stop once the node fails');
+      } finally { await close(proxy); await close(ping); }
     });
   });
 

@@ -67,7 +67,7 @@ const RESERVE_FULFILL_GAS = VERIFICATION_AND_RESERVE_GAS + 2_500_000n;
 const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
 const SELF_GAS = 21_000n;
-const RESERVE_FULFILLS = 20n;
+export const RESERVE_FULFILLS = 20n;
 
 const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
 const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)');

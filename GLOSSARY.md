@@ -60,6 +60,18 @@ _Avoid_: treasury, hot wallet
 A public written account of an operational event (a missed Deadline, a Revocation and its reason), published so consumers can judge it was not a Selective Abort.
 _Avoid_: postmortem, status update
 
+**Page**:
+An alert the operator must act on now, delivered to a phone push (ntfy or PagerDuty); each Oracle Worker sends its own.
+_Avoid_: alarm, incident (an Incident Note is the public account, not the alert)
+
+**Warn**:
+An alert the operator can read later, delivered to a chat webhook, for conditions that do not yet threaten a request.
+_Avoid_: notice
+
+**Dead-man's Switch**:
+A heartbeat ping to healthchecks.io sent only after a completed poll, so a stalled worker goes silent and the check pages.
+_Avoid_: liveness probe, keepalive
+
 ### Randomness
 
 **Alpha**:

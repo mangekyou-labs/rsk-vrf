@@ -4,7 +4,7 @@ import { createPublicClient, defineChain, getAddress, http, type Hex } from 'vie
 import { ProvingKey } from './proving-key.ts';
 import { AwsSecretSource, secretName } from './secrets.ts';
 import { parseKeyHash } from './types.ts';
-import { createWorker, type DrandPin } from './worker.ts';
+import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
 import { runWorkerLoop } from './loop.ts';
 import { jsonLine, type WatchdogConfig } from './watchdog.ts';
 
@@ -50,7 +50,7 @@ async function main() {
     allowedFulfillers: (process.env.OWN_FULFILLER_ADDRESSES ?? '').split(',').filter(Boolean).map(value => getAddress(value.trim().toLowerCase())),
     topUpFulfillments: BigInt(process.env.TOP_UP_FULFILLMENTS ?? '100'),
   };
-  if (watchdog.topUpFulfillments! <= 20n) throw new Error('Invalid top-up threshold');
+  if (watchdog.topUpFulfillments! <= RESERVE_FULFILLS) throw new Error('Invalid top-up threshold');
   const heartbeatUrl = new URL(required('HEALTHCHECKS_PING_URL')).toString();
   const grace = graceBlocks();
   const relays = relayUrls();
