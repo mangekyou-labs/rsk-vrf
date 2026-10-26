@@ -19,6 +19,8 @@ fs_permissions = [
     { access = "read", path = "../tools/vrf-vectors-go/coordinator-vectors.json" },
     { access = "read", path = "./test/fixtures/evmnet-rounds.json" },
     { access = "read", path = "../tools/bn254-svdw/vectors.json" },
+    # DeployCoordinator writes the deployment record and CheckDeployment reads it.
+    { access = "read-write", path = "../deployments" },
 ]
 
 [fmt]

@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {VRFCoordinator} from "../src/VRFCoordinator.sol";
+import {CheckDeployment} from "../script/CheckDeployment.s.sol";
 import {DeployCoordinator} from "../script/DeployCoordinator.s.sol";
 import {DeployPlan} from "../script/DeployPlan.sol";
 import {DeploymentCheck} from "../script/DeploymentCheck.sol";
@@ -209,5 +210,63 @@ contract DeployTest is Test {
         asSafe(address(c), abi.encodeWithSignature("acceptOwnership()"));
 
         expectMismatch(DeploymentCheck.planned(address(c), implementation, safe, provingKey), "payee");
+    }
+
+    /// The record is what `deploy.sh` commits as `deployments/<chainId>.json`, before the
+    /// receipts, commit and verification links are merged in.
+    function test_RecordReadsBackAsThePlan() public {
+        DeployCoordinator.Deployment memory d = deploy();
+        string memory json = script.record(d, deployer, safe, provingKey);
+
+        assertEq(vm.parseJsonAddress(json, ".contracts.proxy.address"), d.proxy);
+        assertEq(vm.parseJsonAddress(json, ".config.provingKey.payee"), safe);
+        assertEq(vm.parseJsonString(json, ".config.drand.beacon"), "evmnet");
+        assertEq(
+            vm.parseJsonBytes32(json, ".config.drand.chainHash"),
+            0x04f1e9062b8a81f848fded9c12306733282b2727ecced50032187751166ec8c3
+        );
+        assertEq(vm.parseJsonUint(json, ".config.fee"), 2e13);
+        assertEq(
+            keccak256(abi.encode(new CheckDeployment().expected(json))),
+            keccak256(abi.encode(planned(d))),
+            "record parses back to the plan"
+        );
+    }
+
+    function test_CheckDeploymentPassesOnTheRecordAfterTheSafeAccepts() public {
+        DeployCoordinator.Deployment memory d = deploy();
+        string memory json = script.record(d, deployer, safe, provingKey);
+        CheckDeployment checker = new CheckDeployment();
+
+        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "owner"));
+        checker.check(json);
+
+        handOff(d);
+        checker.check(json);
+    }
+
+    function test_CheckDeploymentFailsOnAnEditedRecord() public {
+        DeployCoordinator.Deployment memory d = deploy();
+        handOff(d);
+        string memory json = script.record(d, deployer, safe, provingKey);
+        CheckDeployment checker = new CheckDeployment();
+
+        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "callbackGasCap"));
+        checker.check(vm.replace(json, '"callbackGasCap":200000', '"callbackGasCap":200001'));
+
+        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "chainId"));
+        checker.check(vm.replace(json, vm.toString(block.chainid), "31"));
+    }
+
+    /// A deployment that matches its own record but not the plan still fails.
+    function test_CheckDeploymentFailsWhenTheChainAndRecordAgreeOffPlan() public {
+        DeployCoordinator.Deployment memory d = deploy();
+        handOff(d);
+        asSafe(d.proxy, abi.encodeCall(VRFCoordinator.setCallbackGasCap, (DeployPlan.CALLBACK_GAS_CAP + 1)));
+        string memory json = script.record(d, deployer, safe, provingKey);
+        CheckDeployment checker = new CheckDeployment();
+
+        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "plan"));
+        checker.check(json);
     }
 }
