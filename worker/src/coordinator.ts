@@ -56,8 +56,8 @@ export function composeFulfillment(input: FulfillmentInput, key: ProvingKey) {
     [{ type: 'bytes32' }, { type: 'uint256' }, { type: 'address' }, { type: 'address' }, { type: 'bytes32' }, { type: 'uint64' }, { type: 'bytes32' }],
     [DOMAIN_ALPHA, input.chainId, input.coordinator, input.requester, input.requestId, input.targetRound, randomness],
   ));
-  const { proof, beta: output } = key.prove(hexToBigInt(alpha));
+  const { proof, beta: output, hashToCurveTries } = key.prove(hexToBigInt(alpha));
   const beta = keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'uint256' }], [DOMAIN_BETA, output]));
   const drandSignature = [BigInt(`0x${input.signature.slice(2, 66)}`), BigInt(`0x${input.signature.slice(66)}`)] as const;
-  return { alpha, proof, beta, drandSignature };
+  return { alpha, proof, beta, drandSignature, hashToCurveTries };
 }

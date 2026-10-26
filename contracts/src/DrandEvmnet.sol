@@ -32,3 +32,20 @@ library DrandEvmnet {
         return sha256(abi.encodePacked(signature[0], signature[1]));
     }
 }
+
+/// @title DrandEvmnetVerifier
+/// @notice Stateless BLS checks the coordinator calls with `staticcall`. Keeping them out
+///   of the coordinator's runtime keeps it under the EIP-170 code size limit.
+contract DrandEvmnetVerifier {
+    function verify(uint256[4] calldata publicKey, uint64 round, uint256[2] calldata signature)
+        external
+        view
+        returns (bool)
+    {
+        return DrandEvmnet.verify(publicKey, round, signature);
+    }
+
+    function isValidPublicKey(uint256[4] calldata publicKey) external pure returns (bool) {
+        return BLS.isValidPublicKey(publicKey);
+    }
+}

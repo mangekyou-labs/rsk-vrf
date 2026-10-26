@@ -3,7 +3,8 @@
   "domains": {
     "alpha": "0x2bba21e55cd5a074784f779fb179fea5258fb72376e8c50bb6b80b636cc991ce",
     "beta": "0x215a26b6a2856fc0b8489c00b950daf4e47b4f207f61213510b1c2ccd9f0955e",
-    "derive": "0xdbf208b46c8d478792564cbb15ceb2a748af372b580047b69e9e7ae44c1e6fc2"
+    "derive": "0xdbf208b46c8d478792564cbb15ceb2a748af372b580047b69e9e7ae44c1e6fc2",
+    "range": "0x6f34dc0c6ae70c3a5b63ec08c43108d3d92b62325a60f49bdcc6ce371d2f2020"
   },
   "drand": {
     "secretKey": "0x0d8ec95b21ff5afc05a5155c6f9a474c4a3be12a4b81a8e5c55dacd8125a70a3",
@@ -75,12 +76,76 @@
         {
           "context": "0x0000000000000000000000000000000000000000000000000000000000000000",
           "randomBytes": "0xe73f7b504f198ce4c46622c67fdad6f86a18b28783463dab8d32b68dc9f86691",
-          "random": "0xe73f7b504f198ce4c46622c67fdad6f86a18b28783463dab8d32b68dc9f86691"
+          "random": "0xe73f7b504f198ce4c46622c67fdad6f86a18b28783463dab8d32b68dc9f86691",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x511362ca136ad781b9afec3ff9f8c7b5a32f37dc1b027a34a4fc55617ad9050f",
+              "counter": 4
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xe73f7b504f198ce4c46622c67fdad6f86a18b28783463dab8d32b68dc9f86691",
+              "counter": 0
+            }
+          ]
         },
         {
           "context": "0x7c9dba00ab9195743d9ab675de49f3afa454a0fb7ba3d3b39419cfbfa46a8eb5",
           "randomBytes": "0xe0b8f38bbff8c07497af1178bdd7e9c9cd9232f6e2c64b150e919332b0267b82",
-          "random": "0xe0b8f38bbff8c07497af1178bdd7e9c9cd9232f6e2c64b150e919332b0267b82"
+          "random": "0xe0b8f38bbff8c07497af1178bdd7e9c9cd9232f6e2c64b150e919332b0267b82",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000004",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x324e913a9d428fce1240c7838e2e6e2c819d2cf273c1126e3eb25ee1f6dcde25",
+              "counter": 1
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xe0b8f38bbff8c07497af1178bdd7e9c9cd9232f6e2c64b150e919332b0267b82",
+              "counter": 0
+            }
+          ]
         }
       ]
     },
@@ -141,12 +206,76 @@
         {
           "context": "0x0000000000000000000000000000000000000000000000000000000000000000",
           "randomBytes": "0x6c9ece10f3bba0f1d86b5d9aab4195ed1451f59194f82c689e36c7434c72269b",
-          "random": "0x6c9ece10f3bba0f1d86b5d9aab4195ed1451f59194f82c689e36c7434c72269b"
+          "random": "0x6c9ece10f3bba0f1d86b5d9aab4195ed1451f59194f82c689e36c7434c72269b",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000005",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x69dc83deeb88492c7dcd725f06c8d454b5df8864de35c6fa6ed430de84f5a5b1",
+              "counter": 0
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0x6c9ece10f3bba0f1d86b5d9aab4195ed1451f59194f82c689e36c7434c72269b",
+              "counter": 0
+            }
+          ]
         },
         {
           "context": "0x7c9dba00ab9195743d9ab675de49f3afa454a0fb7ba3d3b39419cfbfa46a8eb5",
           "randomBytes": "0xf6d7ccbdb65ab535c0ffa5fec87f5b59cb566ffdfca52141de091959d5a75df4",
-          "random": "0xf6d7ccbdb65ab535c0ffa5fec87f5b59cb566ffdfca52141de091959d5a75df4"
+          "random": "0xf6d7ccbdb65ab535c0ffa5fec87f5b59cb566ffdfca52141de091959d5a75df4",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000004",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x64493a3f7a20f08cce952a064ba2483edfda53e3fcbd26e094aea2f15d90bb7e",
+              "counter": 0
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xf6d7ccbdb65ab535c0ffa5fec87f5b59cb566ffdfca52141de091959d5a75df4",
+              "counter": 0
+            }
+          ]
         }
       ]
     },
@@ -207,12 +336,76 @@
         {
           "context": "0x0000000000000000000000000000000000000000000000000000000000000000",
           "randomBytes": "0x7cc4bb88371f7b63b941955791f36997af1903614d5ecc4a36b89ff70a9e92c4",
-          "random": "0x7cc4bb88371f7b63b941955791f36997af1903614d5ecc4a36b89ff70a9e92c4"
+          "random": "0x7cc4bb88371f7b63b941955791f36997af1903614d5ecc4a36b89ff70a9e92c4",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000005",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x6b83fa31fb4dd043b7d264934262aab009b989c5344b6c84f5d13d6823872284",
+              "counter": 2
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0x7cc4bb88371f7b63b941955791f36997af1903614d5ecc4a36b89ff70a9e92c4",
+              "counter": 0
+            }
+          ]
         },
         {
           "context": "0x7c9dba00ab9195743d9ab675de49f3afa454a0fb7ba3d3b39419cfbfa46a8eb5",
           "randomBytes": "0x448001646545e2bda3d57f5cb2bc2a29260c98070093c4357053ae8ee5f7f2f2",
-          "random": "0x448001646545e2bda3d57f5cb2bc2a29260c98070093c4357053ae8ee5f7f2f2"
+          "random": "0x448001646545e2bda3d57f5cb2bc2a29260c98070093c4357053ae8ee5f7f2f2",
+          "ranges": [
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000001",
+              "max": "0x0000000000000000000000000000000000000000000000000000000000000006",
+              "random": "0x0000000000000000000000000000000000000000000000000000000000000005",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000011",
+              "max": "0x8000000000000000000000000000000000000000000000000000000000000011",
+              "random": "0x2d7db0eeb68fadc20d1297bf510e28567c19af2681cfa07e38b1cb366731e0a5",
+              "counter": 0
+            },
+            {
+              "min": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "counter": 0
+            },
+            {
+              "min": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "max": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "random": "0x448001646545e2bda3d57f5cb2bc2a29260c98070093c4357053ae8ee5f7f2f2",
+              "counter": 0
+            }
+          ]
         }
       ]
     }
