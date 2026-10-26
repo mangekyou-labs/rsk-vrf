@@ -23,7 +23,7 @@ library VRFDerivation {
     /// @notice Uniform inclusive [min, max] by uncapped counter rejection sampling.
     /// @dev The full uint256 range returns random(beta, context). Other spans draw
     ///   keccak256(abi.encode(DOMAIN_RANGE, context, beta, counter)), starting at 0,
-    ///   and discard words below 2**256 % span before reduction. That leaves an
+    ///   and accept words below 2**256 - (2**256 % span). That leaves an
     ///   exact multiple of span possible words, avoiding modulo bias.
     function randomInRange(bytes32 beta, bytes32 context, uint256 min, uint256 max)
         internal
@@ -36,11 +36,12 @@ library VRFDerivation {
         unchecked {
             uint256 span = max - min + 1;
             if (span == 0) return random(beta, context);
-            // Wrapped subtraction represents 2**256 - span.
-            uint256 threshold = (0 - span) % span;
+            // An inclusive upper bound represents the mathematical exclusive
+            // limit even when span divides 2**256, whose limit cannot fit uint256.
+            uint256 lastAccepted = type(uint256).max - (0 - span) % span;
             for (uint256 counter;; counter++) {
                 uint256 word = uint256(keccak256(abi.encode(DOMAIN_RANGE, context, beta, counter)));
-                if (word >= threshold) return min + word % span;
+                if (word <= lastAccepted) return min + word % span;
             }
         }
     }
