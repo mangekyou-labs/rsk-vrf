@@ -61,6 +61,27 @@ describe('worker run', () => {
     assertNoSecret(zeroPeriod.stderr, pinWord, 'startup');
   });
 
+  it('refuses both coordinator sources, or a missing deployment record, with the generic startup line', async () => {
+    const pinned = {
+      RSK_RPC_URL: 'http://127.0.0.1:1',
+      FULFILLER_PRIVATE_KEY: fulfillerKey,
+      DRAND_PIN_PUBLIC_KEY: [pinWord, pinWord, pinWord, pinWord].join(','),
+      DRAND_PIN_GENESIS: '1727521075',
+      DRAND_PIN_PERIOD: '3',
+    };
+    const record = fileURLToPath(new URL('../../deployments/31.json', import.meta.url));
+    for (const env of [
+      { COORDINATOR_ADDRESS: `0x${'11'.repeat(20)}`, COORDINATOR_DEPLOYMENT_FILE: record },
+      { COORDINATOR_DEPLOYMENT_FILE: '/nonexistent/31.json' },
+    ]) {
+      const { code, stdout, stderr } = await runWorker({ ...pinned, ...env });
+      assert.equal(code, 1);
+      assert.equal(stdout, '');
+      assert.equal(stderr, startup);
+      assertNoSecret(stderr + stdout, fulfillerKey, 'startup');
+    }
+  });
+
   it('refuses a non-numeric grace and does not print configuration', async () => {
     const { code, stdout, stderr } = await runWorker({
       RSK_RPC_URL: 'http://127.0.0.1:1',

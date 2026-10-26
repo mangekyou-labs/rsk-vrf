@@ -7,13 +7,11 @@ import {VRFCoordinator} from "../src/VRFCoordinator.sol";
 import {CheckDeployment} from "../script/CheckDeployment.s.sol";
 import {DeployCoordinator} from "../script/DeployCoordinator.s.sol";
 import {DeployPlan} from "../script/DeployPlan.sol";
-import {DeploymentCheck} from "../script/DeploymentCheck.sol";
+import {DeploymentAssertions} from "../script/DeploymentAssertions.sol";
 import {SafeStandIn} from "./helpers/SafeStandIn.sol";
 import {VRFCoordinatorV2} from "./helpers/VRFCoordinatorV2.sol";
 
 contract DeployTest is Test {
-    // keccak256("eip1967.proxy.implementation") - 1
-    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
     // Kyber wire words [x.im, x.re, y.im, y.re] of the evmnet key from api.drand.sh/v2/beacons/evmnet/info.
     uint256 internal constant EVMNET_X_IM = 0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382;
     uint256 internal constant EVMNET_X_RE = 0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f;
@@ -36,8 +34,12 @@ contract DeployTest is Test {
         script = new DeployCoordinator();
     }
 
+    function inputs(address admin) internal view returns (DeployCoordinator.Inputs memory) {
+        return DeployCoordinator.Inputs({deployer: deployer, safe: admin, provingKey: provingKey});
+    }
+
     function deploy() internal returns (DeployCoordinator.Deployment memory d) {
-        d = script.deploy(deployer, safe, provingKey);
+        d = script.deploy(inputs(safe));
     }
 
     function test_DeployConfiguresThePlanAndLeavesTheSafePending() public {
@@ -46,7 +48,9 @@ contract DeployTest is Test {
 
         assertEq(coordinator.owner(), deployer, "deployer owns until hand-off");
         assertEq(coordinator.pendingOwner(), safe, "Safe is pending");
-        assertEq(address(uint160(uint256(vm.load(d.proxy, IMPLEMENTATION_SLOT)))), d.implementation);
+        assertEq(
+            address(uint160(uint256(vm.load(d.proxy, DeploymentAssertions.IMPLEMENTATION_SLOT)))), d.implementation
+        );
 
         assertEq(coordinator.fee(), 2e13);
         assertEq(coordinator.callbackGasCap(), 200_000);
@@ -75,13 +79,17 @@ contract DeployTest is Test {
         SafeStandIn(safe).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
     }
 
-    function planned(DeployCoordinator.Deployment memory d) internal view returns (DeploymentCheck.Expected memory) {
-        return DeploymentCheck.planned(d.proxy, d.implementation, safe, provingKey);
+    function planned(DeployCoordinator.Deployment memory d)
+        internal
+        view
+        returns (DeploymentAssertions.Expected memory)
+    {
+        return DeploymentAssertions.planned(d.proxy, d.implementation, safe, provingKey);
     }
 
     /// External so `expectRevert` sees the library's revert.
-    function check(DeploymentCheck.Expected memory e) external view {
-        DeploymentCheck.check(e);
+    function check(DeploymentAssertions.Expected memory e) external view {
+        DeploymentAssertions.check(e);
     }
 
     function test_CheckPassesAfterTheSafeAccepts() public {
@@ -91,8 +99,8 @@ contract DeployTest is Test {
         assertEq(VRFCoordinator(d.proxy).owner(), safe);
     }
 
-    function expectMismatch(DeploymentCheck.Expected memory e, string memory field) internal {
-        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, field));
+    function expectMismatch(DeploymentAssertions.Expected memory e, string memory field) internal {
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, field));
         this.check(e);
     }
 
@@ -110,7 +118,7 @@ contract DeployTest is Test {
     function test_CheckFailsOnEachChangedOnchainValue() public {
         DeployCoordinator.Deployment memory d = deploy();
         handOff(d);
-        DeploymentCheck.Expected memory e = planned(d);
+        DeploymentAssertions.Expected memory e = planned(d);
         address stranger = makeAddr("stranger");
         address v2 = address(new VRFCoordinatorV2());
         VRFCoordinator.DrandConfig memory drand = DeployPlan.drand();
@@ -164,7 +172,7 @@ contract DeployTest is Test {
         DeployCoordinator.Deployment memory d = deploy();
         handOff(d);
 
-        DeploymentCheck.Expected memory e = planned(d);
+        DeploymentAssertions.Expected memory e = planned(d);
         e.coordinator = makeAddr("not a contract");
         expectMismatch(e, "coordinator");
 
@@ -209,14 +217,14 @@ contract DeployTest is Test {
         c.transferOwnership(safe);
         asSafe(address(c), abi.encodeWithSignature("acceptOwnership()"));
 
-        expectMismatch(DeploymentCheck.planned(address(c), implementation, safe, provingKey), "payee");
+        expectMismatch(DeploymentAssertions.planned(address(c), implementation, safe, provingKey), "payee");
     }
 
     /// The record is what `deploy.sh` commits as `deployments/<chainId>.json`, before the
     /// receipts, commit and verification links are merged in.
     function test_RecordReadsBackAsThePlan() public {
         DeployCoordinator.Deployment memory d = deploy();
-        string memory json = script.record(d, deployer, safe, provingKey);
+        string memory json = script.record(d, inputs(safe));
 
         assertEq(vm.parseJsonAddress(json, ".contracts.proxy.address"), d.proxy);
         assertEq(vm.parseJsonAddress(json, ".config.provingKey.payee"), safe);
@@ -235,27 +243,43 @@ contract DeployTest is Test {
 
     function test_CheckDeploymentPassesOnTheRecordAfterTheSafeAccepts() public {
         DeployCoordinator.Deployment memory d = deploy();
-        string memory json = script.record(d, deployer, safe, provingKey);
+        string memory json = script.record(d, inputs(safe));
         CheckDeployment checker = new CheckDeployment();
 
-        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "owner"));
-        checker.check(json);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, "owner"));
+        checker.check(json, safe);
 
         handOff(d);
-        checker.check(json);
+        checker.check(json, safe);
     }
 
     function test_CheckDeploymentFailsOnAnEditedRecord() public {
         DeployCoordinator.Deployment memory d = deploy();
         handOff(d);
-        string memory json = script.record(d, deployer, safe, provingKey);
+        string memory json = script.record(d, inputs(safe));
         CheckDeployment checker = new CheckDeployment();
 
-        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "callbackGasCap"));
-        checker.check(vm.replace(json, '"callbackGasCap":200000', '"callbackGasCap":200001'));
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, "callbackGasCap"));
+        checker.check(vm.replace(json, '"callbackGasCap":200000', '"callbackGasCap":200001'), safe);
 
-        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "chainId"));
-        checker.check(vm.replace(json, vm.toString(block.chainid), "31"));
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, "chainId"));
+        checker.check(vm.replace(json, vm.toString(block.chainid), "31"), safe);
+    }
+
+    /// deploy.sh writes the Safe into the record from its own argument, so a deployment
+    /// handed to the wrong Safe agrees with its record. Only the independently supplied
+    /// Admin Safe catches it.
+    function test_CheckDeploymentFailsWhenTheRecordNamesAnotherSafe() public {
+        address wrongSafe = address(new SafeStandIn(signer));
+        DeployCoordinator.Deployment memory d = script.deploy(inputs(wrongSafe));
+        vm.prank(signer);
+        SafeStandIn(wrongSafe).execute(d.proxy, abi.encodeWithSignature("acceptOwnership()"));
+        string memory json = script.record(d, inputs(wrongSafe));
+        CheckDeployment checker = new CheckDeployment();
+
+        checker.check(json, wrongSafe);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, "safe"));
+        checker.check(json, safe);
     }
 
     /// A deployment that matches its own record but not the plan still fails.
@@ -263,10 +287,10 @@ contract DeployTest is Test {
         DeployCoordinator.Deployment memory d = deploy();
         handOff(d);
         asSafe(d.proxy, abi.encodeCall(VRFCoordinator.setCallbackGasCap, (DeployPlan.CALLBACK_GAS_CAP + 1)));
-        string memory json = script.record(d, deployer, safe, provingKey);
+        string memory json = script.record(d, inputs(safe));
         CheckDeployment checker = new CheckDeployment();
 
-        vm.expectRevert(abi.encodeWithSelector(DeploymentCheck.Mismatch.selector, "plan"));
-        checker.check(json);
+        vm.expectRevert(abi.encodeWithSelector(DeploymentAssertions.Mismatch.selector, "plan"));
+        checker.check(json, safe);
     }
 }

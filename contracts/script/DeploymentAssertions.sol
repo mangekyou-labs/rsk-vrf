@@ -5,11 +5,12 @@ import {Vm} from "forge-std/Vm.sol";
 import {VRFCoordinator} from "../src/VRFCoordinator.sol";
 import {DeployPlan} from "./DeployPlan.sol";
 
-/// @title DeploymentCheck
-/// @notice The post-hand-off check: the Safe owns the coordinator, no transfer is
+/// @title DeploymentAssertions
+/// @notice The post-hand-off assertions: the Admin Safe is the Admin, no transfer is
 ///   pending, the proxy runs the expected implementation, and every config value matches.
-/// @dev Reverts with `Mismatch(field)` on the first value that differs.
-library DeploymentCheck {
+/// @dev Reverts with `Mismatch(field)` on the first value that differs. `CheckDeployment`
+///   builds the expected values from a deployment record.
+library DeploymentAssertions {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     // keccak256("eip1967.proxy.implementation") - 1
     bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -51,6 +52,7 @@ library DeploymentCheck {
     function check(Expected memory e) internal view {
         VRFCoordinator c = VRFCoordinator(e.coordinator);
         require(e.coordinator.code.length != 0, Mismatch("coordinator"));
+        // The Admin is the `owner()`; the field names keep the getter names.
         require(c.owner() == e.safe, Mismatch("owner"));
         require(c.pendingOwner() == address(0), Mismatch("pendingOwner"));
         address implementation = address(uint160(uint256(VM.load(e.coordinator, IMPLEMENTATION_SLOT))));
@@ -68,11 +70,12 @@ library DeploymentCheck {
         require(c.fee() == e.fee, Mismatch("fee"));
         require(c.callbackGasCap() == e.callbackGasCap, Mismatch("callbackGasCap"));
         require(c.roundOffset() == e.roundOffset, Mismatch("roundOffset"));
+        // The Deadline is `timeoutBlocks` after the request.
         require(c.timeoutBlocks() == e.timeoutBlocks, Mismatch("timeoutBlocks"));
         require(c.confirmations() == e.confirmations, Mismatch("confirmations"));
 
-        // The plan registers exactly one key. Key 1 stays Active only while no other key
-        // is registered and it is not revoked.
+        // The plan registers exactly one key. Key 1 stays the Active Key only while no
+        // other key is registered and it is not revoked.
         require(c.activeKeyId() == 1, Mismatch("activeKeyId"));
         VRFCoordinator.ProvingKey memory key = c.getProvingKey(1);
         require(key.keyHash == keccak256(abi.encode(e.provingKey)), Mismatch("provingKey"));

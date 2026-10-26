@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createPublicClient, createWalletClient, defineChain, encodeFunctionData, http, parseAbi, type Abi, type Address, type Hex } from 'viem';
@@ -16,8 +17,9 @@ const deployerKey = `0x${'56'.repeat(32)}` as Hex;
 const deployer = privateKeyToAccount(deployerKey);
 const wallet = createWalletClient({ account: signer, chain, transport: http(rpcUrl) });
 const contractsDir = fileURLToPath(new URL('../../contracts/', import.meta.url));
-const record = fileURLToPath(new URL('../../deployments/33.json', import.meta.url));
-const editedRecord = fileURLToPath(new URL('../../deployments/33.edited.json', import.meta.url));
+// Records go in a fresh directory under deployments/ (gitignored, and inside forge's
+// fs_permissions), so a developer's own deployments/33.json is never touched.
+const deploymentsDir = fileURLToPath(new URL('../../deployments/', import.meta.url));
 const fixture = JSON.parse(readFileSync(new URL('../../tools/vrf-vectors-go/coordinator-vectors.json', import.meta.url), 'utf8'));
 const artifact = (name: string) => JSON.parse(readFileSync(new URL(`../../contracts/out/${name}.sol/${name}.json`, import.meta.url), 'utf8')) as { abi: Abi; bytecode: { object: Hex } };
 const ownableAbi = parseAbi(['function owner() view returns (address)', 'function pendingOwner() view returns (address)', 'function acceptOwnership()']);
@@ -43,9 +45,11 @@ function run(command: string, args: string[], env: Record<string, string> = {}):
   });
 }
 
-function check(path: string) {
-  return run('forge', ['script', 'script/CheckDeployment.s.sol:CheckDeployment', '--rpc-url', rpcUrl, '--sig', 'run(string)', path]);
+function check(path: string, expectedSafe: Address) {
+  return run('forge', ['script', 'script/CheckDeployment.s.sol:CheckDeployment', '--rpc-url', rpcUrl, '--sig', 'run(string,address)', path, expectedSafe]);
 }
+
+function git(...args: string[]) { return execFileSync('git', args, { cwd: contractsDir, encoding: 'utf8' }).trim(); }
 
 type Recorded = { address: string; block: number; txHash: Hex };
 
@@ -59,15 +63,19 @@ describe('deploy and Safe hand-off on real rskj', { concurrency: 1 }, () => {
     const safe = safeReceipt.contractAddress;
     const [x, y] = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey).publicKey;
 
+    const dir = mkdtempSync(join(deploymentsDir, 'test-'));
+    const record = join(dir, '33.json');
+    const editedRecord = join(dir, '33.edited.json');
     try {
-      const deployed = await withMiner(() => run('script/deploy.sh', [safe, String(x), String(y), '--private-key', deployerKey], { RPC_URL: rpcUrl }));
+      const deployed = await withMiner(() => run('script/deploy.sh', [safe, String(x), String(y), '--private-key', deployerKey], { RPC_URL: rpcUrl, DEPLOYMENT_FILE: record }));
       assert.equal(deployed.code, 0, deployed.output);
 
       const text = readFileSync(record, 'utf8');
       for (const address of text.match(/0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g) ?? []) assert.equal(address, address.toLowerCase(), 'addresses are lowercase');
       const json = JSON.parse(text);
       assert.equal(json.chainId, 33);
-      assert.equal(json.commit, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: contractsDir, encoding: 'utf8' }).trim());
+      const dirty = git('status', '--porcelain', '--untracked-files=all') !== '';
+      assert.equal(json.commit, git('rev-parse', 'HEAD') + (dirty ? '-dirty' : ''), 'off chain 31 a dirty tree is marked, not refused');
       assert.equal(json.deployer, deployer.address.toLowerCase());
       assert.equal(json.safe, safe.toLowerCase());
       assert.equal(json.config.provingKey.payee, safe.toLowerCase());
@@ -97,7 +105,7 @@ describe('deploy and Safe hand-off on real rskj', { concurrency: 1 }, () => {
 
       const coordinator = json.contracts.proxy.address as Address;
       assert.equal((await client.readContract({ address: coordinator, abi: ownableAbi, functionName: 'pendingOwner' })).toLowerCase(), safe.toLowerCase());
-      const early = await check('../deployments/33.json');
+      const early = await check(record, safe);
       assert.notEqual(early.code, 0, 'check fails while the deployer still owns');
       assert.match(early.output, /Mismatch\("owner"\)/);
 
@@ -105,18 +113,21 @@ describe('deploy and Safe hand-off on real rskj', { concurrency: 1 }, () => {
       await receipt(await wallet.writeContract({ address: safe, abi: standIn.abi, functionName: 'execute', args: [coordinator, accept], gas: 200_000n, gasPrice: 1n }));
       assert.equal((await client.readContract({ address: coordinator, abi: ownableAbi, functionName: 'owner' })).toLowerCase(), safe.toLowerCase());
 
-      const passed = await check('../deployments/33.json');
+      const passed = await check(record, safe);
       assert.equal(passed.code, 0, passed.output);
+
+      const otherSafe = await check(record, signer.address);
+      assert.notEqual(otherSafe.code, 0, 'check fails when the operator expects another Safe');
+      assert.match(otherSafe.output, /Mismatch\("safe"\)/);
 
       const editedText = text.replace('"fee": 20000000000000', '"fee": 20000000000001');
       assert.notEqual(editedText, text, 'the edit changes the fee');
       writeFileSync(editedRecord, editedText);
-      const edited = await check('../deployments/33.edited.json');
+      const edited = await check(editedRecord, safe);
       assert.notEqual(edited.code, 0, 'check fails on an edited fee');
       assert.match(edited.output, /Mismatch\("fee"\)/);
     } finally {
-      rmSync(record, { force: true });
-      rmSync(editedRecord, { force: true });
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
