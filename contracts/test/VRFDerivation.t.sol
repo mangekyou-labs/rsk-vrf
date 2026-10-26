@@ -5,6 +5,28 @@ import {VRFCoordinatorTest} from "./VRFCoordinator.t.sol";
 import {VRFCoordinator} from "../src/VRFCoordinator.sol";
 
 contract VRFDerivationTest is VRFCoordinatorTest {
+    function test_RangeRejectsUpperTailAsSpecified() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        fulfillAs(fulfiller, v);
+        // Issue #8 accepts x < 2**256 - (2**256 % span). For span 2**255 + 1,
+        // independently ABI-encoded viem draws 0..3 are above that limit.
+        // Draw 4 is 36671592648571464718632021674425296288157242974143320046185919556128039568638.
+        assertEq(
+            coordinator.deriveRandomInRange(v.requestId, bytes32(0), 17, (uint256(1) << 255) + 17),
+            36671592648571464718632021674425296288157242974143320046185919556128039568655
+        );
+    }
+
+    function test_RangeWithPowerOfTwoSpanAcceptsWithoutOverflow() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        fulfillAs(fulfiller, v);
+        // For span 2, the mathematical acceptance limit is 2**256. Every draw
+        // is accepted; the first range word for this Derivation Context is odd.
+        assertEq(coordinator.deriveRandomInRange(v.requestId, v.derivations[1].context, 7, 8), 8);
+    }
+
     function test_RangeReadsOnlyFulfilledBeta() public {
         RequestVector memory v = vector(0);
         vm.expectRevert(VRFCoordinator.UnknownRequest.selector);

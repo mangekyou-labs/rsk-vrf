@@ -118,13 +118,13 @@ func rangeDerivations(beta, ctx, word []byte) []RangeDerivation {
 	} {
 		min, max := bounds[0], bounds[1]
 		span := new(big.Int).Add(new(big.Int).Sub(max, min), big.NewInt(1))
-		threshold := new(big.Int).Mod(width, span)
+		limit := new(big.Int).Sub(width, new(big.Int).Mod(width, span))
 		x := new(big.Int).SetBytes(word)
 		var counter uint64
 		if span.Cmp(width) != 0 {
 			for {
 				x.SetBytes(crypto.Keccak256(label("rsk-vrf/v1/range"), ctx, beta, u64(counter)))
-				if x.Cmp(threshold) >= 0 {
+				if x.Cmp(limit) < 0 {
 					break
 				}
 				counter++
