@@ -28,8 +28,9 @@ data "aws_iam_policy_document" "host" {
   }
 
   statement {
-    sid       = "LoadProvingKeys"
-    actions   = ["secretsmanager:GetSecretValue"]
+    sid = "LoadProvingKeys"
+    # DescribeSecret tells an empty secret apart from a missing one.
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = ["arn:${local.partition}:secretsmanager:${local.region}:${local.account}:secret:rsk-vrf/proving-key/*"]
   }
 
