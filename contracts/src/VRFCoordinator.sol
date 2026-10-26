@@ -194,7 +194,9 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     function _addDrandConfig(DrandConfig calldata drand) private returns (uint8 id) {
         CoordinatorStorage storage $ = _storage();
         if ($.drandConfigs.length >= 256) revert ValueOutOfBounds("drandConfigCount");
-        if (drand.period == 0 || !DRAND_VERIFIER.isValidPublicKey(drand.publicKey)) revert ValueOutOfBounds("drandConfig");
+        if (drand.period == 0 || !DRAND_VERIFIER.isValidPublicKey(drand.publicKey)) {
+            revert ValueOutOfBounds("drandConfig");
+        }
         id = uint8($.drandConfigs.length);
         $.drandConfigs.push(drand);
         emit DrandConfigAdded(id, drand.publicKey, drand.genesis, drand.period);

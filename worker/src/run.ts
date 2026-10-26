@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Polling worker. Each poll backfills from the chain; proving keys load from Secrets Manager.
-import { setTimeout } from 'node:timers/promises';
 import { createPublicClient, defineChain, getAddress, http, type Hex } from 'viem';
 import { ProvingKey } from './proving-key.ts';
 import { AwsSecretSource, secretName } from './secrets.ts';
 import { parseKeyHash } from './types.ts';
-import { createWorker, type DrandPin } from './worker.ts';
+import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
+import { runWorkerLoop } from './loop.ts';
+import { jsonLine, type WatchdogConfig } from './watchdog.ts';
 
 const SPEC_RELAYS = ['https://api.drand.sh', 'https://api2.drand.sh', 'https://api3.drand.sh'];
 
@@ -41,6 +42,16 @@ function graceBlocks(): number {
 
 async function main() {
   const pin = drandPin();
+  const watchdog: WatchdogConfig = {
+    pageUrl: new URL(required('ALERT_PAGE_URL')).toString(),
+    warningUrl: new URL(required('ALERT_WARNING_URL')).toString(),
+    workerId: required('WORKER_ID'),
+    pageToken: process.env.ALERT_PAGE_TOKEN,
+    allowedFulfillers: (process.env.OWN_FULFILLER_ADDRESSES ?? '').split(',').filter(Boolean).map(value => getAddress(value.trim().toLowerCase())),
+    topUpFulfillments: BigInt(process.env.TOP_UP_FULFILLMENTS ?? '100'),
+  };
+  if (watchdog.topUpFulfillments! <= RESERVE_FULFILLS) throw new Error('Invalid top-up threshold');
+  const heartbeatUrl = new URL(required('HEALTHCHECKS_PING_URL')).toString();
   const grace = graceBlocks();
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
@@ -68,27 +79,28 @@ async function main() {
     return ProvingKey.fromHex(secret);
   };
   const worker = createWorker({
-    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, loadProvingKey, drandPin: pin, graceBlocks: grace,
+    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, loadProvingKey, drandPin: pin, graceBlocks: grace, watchdog,
     report: line => process.stderr.write(`${line}\n`),
   });
   const stop = new AbortController();
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
-  // KeySync carries only keyIds, keyHashes and load-error messages, which never quote a secret.
-  for (const key of await worker.syncKeys()) process.stdout.write(`${JSON.stringify(key)}\n`);
-  process.stdout.write(`worker: polling ${coordinator}\n`);
-  while (!stop.signal.aborted) {
-    try {
-      for (const result of await worker.pollOnce()) process.stdout.write(`${JSON.stringify(result)}\n`);
-    } catch {
-      process.stderr.write('worker: polling failed; retrying\n');
-    }
-    try { await setTimeout(10_000, undefined, { signal: stop.signal }); } catch { /* shutdown */ }
-  }
+  // Do not log secret-store exception text: provider errors can quote configuration.
+  for (const key of await worker.syncKeys()) process.stdout.write(`${jsonLine({ event: 'key_sync', keyId: key.keyId, keyHash: key.keyHash, held: key.held })}\n`);
+  process.stdout.write(`${jsonLine({ event: 'polling', coordinator, workerId: watchdog.workerId })}\n`);
+  await runWorkerLoop({
+    pollOnce: worker.pollOnce,
+    signal: stop.signal,
+    report: line => process.stdout.write(`${line}\n`),
+    heartbeat: async () => {
+      const response = await fetch(heartbeatUrl, { signal: AbortSignal.timeout(5_000), redirect: 'error' });
+      if (!response.ok) throw new Error('Heartbeat failed');
+    },
+  });
 }
 
 try { await main(); } catch {
   // Never stringify SDK errors or secret-bearing configuration.
-  process.stderr.write('worker: startup failed; check configuration, RPC and Secrets Manager access\n');
+  process.stderr.write(`${jsonLine({ level: 'error', event: 'startup_failed', message: 'Check configuration, RPC and Secrets Manager access' })}\n`);
   process.exitCode = 1;
 }

@@ -3,6 +3,7 @@ import { sendRawTransaction } from 'viem/actions';
 import { privateKeyToAccount } from 'viem/accounts';
 import { composeFulfillment, coordinatorAbi, KeyState, servesKey } from './coordinator.ts';
 import type { ProvingKey } from './proving-key.ts';
+import { createWatchdog, type WatchdogConfig } from './watchdog.ts';
 
 /** Local copy of a drand beacon. Chain config is used only after it matches this pin. */
 export interface DrandPin {
@@ -13,6 +14,7 @@ export interface DrandPin {
 
 export interface WorkerConfig {
   rpcUrl: string;
+  watchdog?: WatchdogConfig;
   coordinator: Address;
   chain: Chain;
   fulfillerPrivateKey: Hex;
@@ -65,14 +67,15 @@ const RESERVE_FULFILL_GAS = VERIFICATION_AND_RESERVE_GAS + 2_500_000n;
 const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
 const SELF_GAS = 21_000n;
-const RESERVE_FULFILLS = 20n;
+export const RESERVE_FULFILLS = 20n;
 
 const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
 const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)');
 const refundedEvent = parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)');
+const keyRegisteredEvent = parseAbiItem('event KeyRegistered(uint32 keyId, bytes32 keyHash, address payee)');
 const keyStateChangedEvent = parseAbiItem('event KeyStateChanged(uint32 keyId, uint8 state)');
 
-type OutcomeLog = { blockNumber: bigint | null; args: { requestId: Hex } };
+type OutcomeLog = { blockNumber: bigint | null; blockHash: Hex | null; logIndex: number | null; args: { requestId: Hex; fulfiller?: Address; reason?: number } };
 type Inflight = {
   nonce: number;
   requestId: Hex | null;
@@ -149,9 +152,11 @@ export function createWorker(config: WorkerConfig) {
   const fetchRelay = config.fetch ?? globalThis.fetch;
   const now = config.nowSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
   const report = config.report ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const watchdog = createWatchdog(config.watchdog, report);
   const relays = (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls : config.relayUrl ? [config.relayUrl] : []).map(url => url.replace(/\/$/, ''));
-  const reportedPin = new Set<number>();
   const stalled = new Set<Hex>();
+  const incidentRefunds = new Set<Hex>();
+  const publishedProofs = new Map<string, Record<string, unknown>>();
   // Every Active or Draining key may still have Fulfillable requests, so each is held.
   const keys = new Map<string, Promise<ProvingKey | undefined>>();
   const keyFor = (keyHash: Hex) => {
@@ -270,7 +275,10 @@ export function createWorker(config: WorkerConfig) {
     let reserved = 0n;
     for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
     const candidateReserve = RESERVE_FULFILLS * fields.gas * fields.gasPrice;
-    if (balance - reserved < reserveCost || balance - reserved < candidateReserve) return null;
+    if (balance - reserved < reserveCost || balance - reserved < candidateReserve) {
+      await watchdog.alert('page', 'low_balance', { balance, available: balance - reserved, required: candidateReserve > reserveCost ? candidateReserve : reserveCost });
+      return null;
+    }
     if (fields.serialized == null && (!fields.canResign || fields.to == null)) return null;
     try {
       const to = fields.to;
@@ -489,7 +497,9 @@ export function createWorker(config: WorkerConfig) {
         if (!('args' in log) || log.args == null || typeof log.args !== 'object' || !('requestId' in log.args)) continue;
         const requestId = log.args.requestId;
         if (typeof requestId !== 'string' || !requestId.startsWith('0x')) continue;
-        parsed.push({ blockNumber: log.blockNumber, args: { requestId: requestId as Hex } });
+        const fulfiller = 'fulfiller' in log.args && typeof log.args.fulfiller === 'string' ? log.args.fulfiller as Address : undefined;
+        const reason = 'reason' in log.args && typeof log.args.reason === 'number' ? log.args.reason : undefined;
+        parsed.push({ blockNumber: log.blockNumber, blockHash: log.blockHash, logIndex: log.logIndex, args: { requestId: requestId as Hex, fulfiller, reason } });
       }
       return parsed;
     } catch (error) {
@@ -499,194 +509,312 @@ export function createWorker(config: WorkerConfig) {
     }
   }
 
+  /** Validate against the request's final valid block: current-state fulfill must reject after Deadline. */
+  async function missedDeadline(requestId: Hex, request: { requester: Address; targetRound: bigint; deadline: number; keyId: number; drandConfigId: number; callbackGasCap: number }, latest: bigint): Promise<boolean> {
+    if (!config.watchdog) return true;
+    const binding = `${requestId}:${request.keyId}:${request.targetRound}:${request.drandConfigId}:${request.requester.toLowerCase()}`;
+    let proof = publishedProofs.get(binding);
+    let proofUnavailable = 'proof_validation_unavailable';
+    if (!proof) {
+      try {
+        const [keyHash, , state] = await readKey(request.keyId);
+        // Retirement prevents sending, but the withheld proof remains publishable.
+        // Revocation still prohibits proving, including incident publication.
+        proofUnavailable = 'proving_key_unavailable';
+        const provingKey = state !== KeyState.Revoked && state !== KeyState.None ? await keyFor(keyHash) : undefined;
+        if (!provingKey) {
+          await watchdog.alert('page', 'missing_proving_key', { requestId, keyHash, keyId: request.keyId }, `missing_proving_key:${requestId}`);
+          throw new Error('Proving Key unavailable');
+        }
+        const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
+        proofUnavailable = 'drand_config_mismatch';
+        if (!pinMatches(beacon)) {
+          await watchdog.alert('page', 'drand_config_mismatch', { requestId, drandConfigId: request.drandConfigId }, `drand_config_mismatch:${request.drandConfigId}`);
+          throw new Error('Pinned drand config mismatch');
+        }
+        proofUnavailable = 'drand_unavailable';
+        const signature = await fetchSignature(request.targetRound);
+        const input = { chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: request.requester, requestId, targetRound: request.targetRound, signature };
+        const composed = composeFulfillment(input, provingKey);
+        proofUnavailable = 'proof_validation_unavailable';
+        await publicClient.simulateContract({
+          address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, composed.proof, composed.drandSignature],
+          account, blockNumber: BigInt(request.deadline), gasPrice: 0n,
+          gas: VERIFICATION_AND_RESERVE_GAS + ADDITIONAL_HASH_TO_CURVE_GAS * BigInt(composed.hashToCurveTries - 1) + BigInt(request.callbackGasCap),
+        });
+        proof = { ...input, keyHash, keyId: request.keyId, drandConfigId: request.drandConfigId, ...composed };
+        publishedProofs.set(binding, proof);
+      } catch (error) {
+        if (error instanceof BeaconUnavailable) {
+          await watchdog.alert('warn', 'drand_stall', { requestId, drandConfigId: request.drandConfigId, targetRound: request.targetRound }, `drand_stall:${requestId}`);
+        }
+      }
+    }
+    const delivered = await watchdog.alert('page', 'missed_deadline', { requestId, deadline: request.deadline, block: latest, proof: proof ?? null, ...(proof ? {} : { proofUnavailable }) }, `missed_deadline:${binding}:${proof ? 'proof' : 'unavailable'}`);
+    return proof != null && delivered;
+  }
+
   return {
     syncKeys,
     /** The keyHashes of the Proving Keys currently held in memory. */
     heldKeys: () => [...held] as Hex[],
     async pollOnce(): Promise<PollResult[]> {
-      const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
-      const quoted = startPrice(await publicClient.getGasPrice(), await blockMinimum());
-      balance = await publicClient.getBalance({ address: account.address });
-      reserveCost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
-      await reconcile(latest, quoted.price, quoted.cap);
-      const fromBlock = latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
-      const [requestedLogs, fulfilledLogs, refundedLogs] = await Promise.all([
-        logsFor(requestedEvent, fromBlock, latest),
-        logsFor(fulfilledEvent, fromBlock, latest),
-        logsFor(refundedEvent, fromBlock, latest),
-      ]);
-      const changes = await publicClient.getLogs({ address: config.coordinator, event: keyStateChangedEvent, fromBlock, toBlock: latest });
-      const changeIds = changes.map(log => `${log.blockHash}:${log.logIndex}`).join(',');
-      if (changeIds !== keyChanges) synced = false;
-      keyChanges = changeIds;
-      if (!synced) await syncKeys();
-      const requestInWindow = new Set<Hex>();
-      for (const log of requestedLogs) {
-        if (log.blockNumber == null) continue;
-        requestInWindow.add(log.args.requestId);
-        if (!pending.has(log.args.requestId) && !finished.has(log.args.requestId)) pending.set(log.args.requestId, { outcomeBlock: null });
-      }
-      const outcomeInScan = new Map<Hex, bigint>();
-      for (const log of [...fulfilledLogs, ...refundedLogs]) {
-        if (log.blockNumber == null) continue;
-        const prior = outcomeInScan.get(log.args.requestId);
-        if (prior == null || log.blockNumber < prior) outcomeInScan.set(log.args.requestId, log.blockNumber);
-      }
-      for (const [id, outcomeBlock] of finished) {
-        const seen = outcomeInScan.get(id);
-        if (seen != null) {
-          if (latest < seen + OUTCOME_DEPTH) {
-            finished.delete(id);
-            pending.set(id, { outcomeBlock: seen });
-          } else {
-            finished.set(id, seen);
-          }
-        } else if (outcomeBlock > latest || outcomeBlock >= fromBlock) {
-          finished.delete(id);
-          pending.set(id, { outcomeBlock: null });
+      try {
+        let rpcFailed = false;
+        const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
+        if (config.watchdog) {
+          const syncing: unknown = await publicClient.request({ method: 'eth_syncing' as never, params: [] as never });
+          if (syncing !== false) await watchdog.alert('warn', 'node_unhealthy', { reason: 'syncing' });
+          else watchdog.clear('node_unhealthy');
         }
-      }
-      for (const [id, state] of pending) {
-        const seen = outcomeInScan.get(id);
-        if (seen != null) state.outcomeBlock = seen;
-        else if (state.outcomeBlock != null && (state.outcomeBlock > latest || state.outcomeBlock >= fromBlock)) state.outcomeBlock = null;
-      }
-
-      const results: PollResult[] = [];
-      const fulfillable: Fulfillable[] = [];
-      for (const requestId of [...pending.keys()]) {
-        const state = pending.get(requestId);
-        if (!state) continue;
-        try {
-          const request = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId], blockTag: 'latest' });
-          if (request.status === REQUEST_STATUS.NONE) {
-            pending.delete(requestId);
-            if (!reportedGone.has(requestId)) {
-              reportedGone.add(requestId);
-              results.push({ requestId, status: 'skipped' });
-            }
-            continue;
-          }
-          reportedGone.delete(requestId);
-          if (request.status === REQUEST_STATUS.FULFILLED || request.status === REQUEST_STATUS.REFUNDED) {
-            const depth = OUTCOME_DEPTH;
-            const agedOut = state.outcomeBlock == null && !requestInWindow.has(requestId);
-            if (agedOut || (state.outcomeBlock != null && latest >= state.outcomeBlock + depth)) {
-              if (state.outcomeBlock != null) finished.set(requestId, state.outcomeBlock);
-              pending.delete(requestId);
-              continue;
-            }
-            results.push({ requestId, status: 'waiting' });
-            continue;
-          }
-          if (request.status !== REQUEST_STATUS.PENDING) {
-            results.push({ requestId, status: 'skipped' });
-            continue;
-          }
-          if (latest > BigInt(request.deadline)) {
-            results.push({ requestId, status: 'skipped' });
-            continue;
-          }
-          const [keyHash, , keyState] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
-          // Checked per request too: Retired is derived from block height and emits no event.
-          if (!servesKey(keyState)) evict(keyHash);
-          const provingKey = servesKey(keyState) ? await keyFor(keyHash) : undefined;
-          if (provingKey) held.add(keyHash.toLowerCase());
-          if (!provingKey) {
-            results.push({ requestId, status: 'skipped' });
-            continue;
-          }
-          const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
-          if (!pinMatches(beacon)) {
-            if (!reportedPin.has(request.drandConfigId)) {
-              reportedPin.add(request.drandConfigId);
-              report(`worker: drand config ${request.drandConfigId} pin mismatched`);
-            }
-            results.push({ requestId, status: 'skipped' });
-            continue;
-          }
-          const confirmations = BigInt(request.confirmations);
-          const grace = BigInt(config.graceBlocks ?? 0);
-          if (latest < BigInt(request.requestBlock) + confirmations + grace) {
-            results.push({ requestId, status: 'waiting' });
-            continue;
-          }
-          const roundTime = config.drandPin.genesis + (request.targetRound - 1n) * config.drandPin.period;
-          if (now() < roundTime) {
-            results.push({ requestId, status: 'waiting' });
-            continue;
-          }
-          if (inflightFor(requestId) != null) {
-            results.push({ requestId, status: 'waiting' });
-            continue;
-          }
-          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime, callbackGasCap: request.callbackGasCap, provingKey });
-        } catch (error) {
-          if (error instanceof NonceSyncError) throw error;
-          results.push({ requestId, status: 'retry' });
-        }
-      }
-      fulfillable.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
-      let effective = 0n;
-      const cost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
-      if (fulfillable.length > 0) {
+        const quoted = startPrice(await publicClient.getGasPrice(), await blockMinimum());
+        balance = await publicClient.getBalance({ address: account.address });
+        reserveCost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
         let reserved = 0n;
         for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
-        effective = balance - reserved;
-      }
-      for (const item of fulfillable) {
-        if (unknownPending || inflight.size >= MAX_IN_FLIGHT || effective < cost) {
-          results.push({ requestId: item.requestId, status: 'waiting' });
-          continue;
+        const available = balance - reserved;
+        if (available < reserveCost) await watchdog.alert('page', 'low_balance', { balance, available, required: reserveCost });
+        else watchdog.clear('low_balance');
+        const topUpCost = (config.watchdog?.topUpFulfillments ?? 100n) * RESERVE_FULFILL_GAS * quoted.price;
+        if (available < topUpCost) await watchdog.alert('warn', 'top_up_balance', { balance, available, required: topUpCost });
+        else watchdog.clear('top_up_balance');
+        await reconcile(latest, quoted.price, quoted.cap);
+        const fromBlock = latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
+        const [requestedLogs, fulfilledLogs, refundedLogs] = await Promise.all([
+          logsFor(requestedEvent, fromBlock, latest),
+          logsFor(fulfilledEvent, fromBlock, latest),
+          logsFor(refundedEvent, fromBlock, latest),
+        ]);
+        const changes = await publicClient.getLogs({ address: config.coordinator, event: keyStateChangedEvent, fromBlock, toBlock: latest });
+        const registrations = await publicClient.getLogs({ address: config.coordinator, event: keyRegisteredEvent, fromBlock, toBlock: latest });
+        for (const log of [...registrations, ...changes]) {
+          if (log.blockNumber == null) continue;
+          await watchdog.alert('page', 'key_registry_changed', { block: log.blockNumber, transactionHash: log.transactionHash, ...log.args }, `key_registry_changed:${log.blockHash}:${log.logIndex}`);
         }
-        try {
-          let signature: Hex;
+        const changeIds = changes.map(log => `${log.blockHash}:${log.logIndex}`).join(',');
+        if (changeIds !== keyChanges) synced = false;
+        keyChanges = changeIds;
+        if (!synced) await syncKeys();
+        const ownedFulfillers = new Set([account.address, ...(config.watchdog?.allowedFulfillers ?? [])].map(address => address.toLowerCase()));
+        for (const log of fulfilledLogs) {
+          if (log.blockNumber == null || log.args.fulfiller == null || ownedFulfillers.has(log.args.fulfiller.toLowerCase())) continue;
+          await watchdog.alert('page', 'foreign_fulfillment', { requestId: log.args.requestId, fulfiller: log.args.fulfiller, block: log.blockNumber }, `foreign_fulfillment:${log.blockHash}:${log.logIndex}`);
+        }
+        const deadlineRefunds = new Set(refundedLogs.filter(log => log.args.reason === 0).map(log => log.args.requestId));
+        const requestInWindow = new Set<Hex>();
+        for (const log of requestedLogs) {
+          if (log.blockNumber == null) continue;
+          requestInWindow.add(log.args.requestId);
+          if (!pending.has(log.args.requestId) && !finished.has(log.args.requestId)) pending.set(log.args.requestId, { outcomeBlock: null });
+        }
+        const outcomeInScan = new Map<Hex, bigint>();
+        for (const log of [...fulfilledLogs, ...refundedLogs]) {
+          if (log.blockNumber == null) continue;
+          const prior = outcomeInScan.get(log.args.requestId);
+          if (prior == null || log.blockNumber < prior) outcomeInScan.set(log.args.requestId, log.blockNumber);
+        }
+        for (const [id, outcomeBlock] of finished) {
+          const seen = outcomeInScan.get(id);
+          if (seen != null) {
+            if (latest < seen + OUTCOME_DEPTH) {
+              finished.delete(id);
+              pending.set(id, { outcomeBlock: seen });
+            } else {
+              finished.set(id, seen);
+            }
+          } else if (outcomeBlock > latest || outcomeBlock >= fromBlock) {
+            finished.delete(id);
+            pending.set(id, { outcomeBlock: null });
+          }
+        }
+        for (const [id, state] of pending) {
+          const seen = outcomeInScan.get(id);
+          if (seen != null) state.outcomeBlock = seen;
+          else if (state.outcomeBlock != null && (state.outcomeBlock > latest || state.outcomeBlock >= fromBlock)) state.outcomeBlock = null;
+        }
+
+        const results: PollResult[] = [];
+        const fulfillable: Fulfillable[] = [];
+        const signatures = new Map<bigint, Hex>();
+        let oldest: { requestId: Hex; requestBlock: bigint; deadline: bigint } | undefined;
+        for (const requestId of [...pending.keys()]) {
+          const state = pending.get(requestId);
+          if (!state) continue;
           try {
-            signature = await fetchSignature(item.targetRound);
-          } catch (error) {
-            if (!(error instanceof BeaconUnavailable)) throw error;
-            if (now() < item.roundTime + 30n) {
-              results.push({ requestId: item.requestId, status: 'retry' });
+            const request = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId], blockTag: 'latest' });
+            if (request.status === REQUEST_STATUS.NONE) {
+              pending.delete(requestId);
+              if (!reportedGone.has(requestId)) {
+                reportedGone.add(requestId);
+                results.push({ requestId, status: 'skipped' });
+              }
               continue;
             }
-            if (!stalled.has(item.requestId)) {
-              stalled.add(item.requestId);
-              await probeHealth(error.relays);
-              report(`worker: drand config ${item.drandConfigId} round ${item.targetRound} stalled`);
+            reportedGone.delete(requestId);
+            if (request.status === REQUEST_STATUS.REFUNDED && (deadlineRefunds.has(requestId) || incidentRefunds.has(requestId))) {
+              incidentRefunds.add(requestId);
+              if (!await missedDeadline(requestId, request, latest)) {
+                results.push({ requestId, status: 'waiting' });
+                continue;
+              }
+              incidentRefunds.delete(requestId);
             }
-            results.push({ requestId: item.requestId, status: 'stalled' });
-            continue;
+            if (request.status === REQUEST_STATUS.FULFILLED || request.status === REQUEST_STATUS.REFUNDED) {
+              const depth = OUTCOME_DEPTH;
+              const agedOut = state.outcomeBlock == null && !requestInWindow.has(requestId);
+              if (agedOut || (state.outcomeBlock != null && latest >= state.outcomeBlock + depth)) {
+                if (state.outcomeBlock != null) finished.set(requestId, state.outcomeBlock);
+                pending.delete(requestId);
+                continue;
+              }
+              results.push({ requestId, status: 'waiting' });
+              continue;
+            }
+            if (request.status !== REQUEST_STATUS.PENDING) {
+              results.push({ requestId, status: 'skipped' });
+              continue;
+            }
+            if (!oldest || BigInt(request.requestBlock) < oldest.requestBlock) oldest = { requestId, requestBlock: BigInt(request.requestBlock), deadline: BigInt(request.deadline) };
+            if (latest > BigInt(request.deadline)) {
+              await missedDeadline(requestId, request, latest);
+              results.push({ requestId, status: 'skipped' });
+              continue;
+            }
+            const [keyHash, , keyState] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
+            // Checked per request too: Retired is derived from block height and emits no event.
+            if (!servesKey(keyState)) evict(keyHash);
+            let provingKey: ProvingKey | undefined;
+            try { provingKey = servesKey(keyState) ? await keyFor(keyHash) : undefined; } catch { /* Missing key is paged below without exposing store errors. */ }
+            if (provingKey) held.add(keyHash.toLowerCase());
+            if (!provingKey) {
+              if (servesKey(keyState)) await watchdog.alert('page', 'missing_proving_key', { requestId, keyHash, keyId: request.keyId }, `missing_proving_key:${requestId}`);
+              results.push({ requestId, status: 'skipped' });
+              continue;
+            }
+            watchdog.clear(`missing_proving_key:${requestId}`);
+            const beacon = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getDrandConfig', args: [request.drandConfigId], blockTag: 'latest' });
+            if (!pinMatches(beacon)) {
+              await watchdog.alert('page', 'drand_config_mismatch', { requestId, drandConfigId: request.drandConfigId }, `drand_config_mismatch:${request.drandConfigId}`);
+              results.push({ requestId, status: 'skipped' });
+              continue;
+            }
+            watchdog.clear(`drand_config_mismatch:${request.drandConfigId}`);
+            const roundTime = config.drandPin.genesis + (request.targetRound - 1n) * config.drandPin.period;
+            const confirmations = BigInt(request.confirmations);
+            if (config.watchdog && latest >= BigInt(request.requestBlock) + confirmations && now() >= roundTime + 30n) {
+              try {
+                const signature = signatures.get(request.targetRound) ?? await fetchSignature(request.targetRound);
+                signatures.set(request.targetRound, signature);
+                watchdog.clear(`drand_stall:${requestId}`);
+                stalled.delete(requestId);
+              } catch (error) {
+                if (!(error instanceof BeaconUnavailable)) throw error;
+                if (!stalled.has(requestId)) { stalled.add(requestId); await probeHealth(error.relays); }
+                await watchdog.alert('warn', 'drand_stall', { requestId, drandConfigId: request.drandConfigId, targetRound: request.targetRound }, `drand_stall:${requestId}`);
+              }
+            }
+            const grace = BigInt(config.graceBlocks ?? 0);
+            if (latest < BigInt(request.requestBlock) + confirmations + grace) {
+              results.push({ requestId, status: 'waiting' });
+              continue;
+            }
+            if (now() < roundTime) {
+              results.push({ requestId, status: 'waiting' });
+              continue;
+            }
+            if (inflightFor(requestId) != null) {
+              results.push({ requestId, status: 'waiting' });
+              continue;
+            }
+            fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime, callbackGasCap: request.callbackGasCap, provingKey });
+          } catch (error) {
+            if (error instanceof NonceSyncError) throw error;
+            rpcFailed = true;
+            await watchdog.alert('warn', 'rpc_unhealthy');
+            results.push({ requestId, status: 'retry' });
           }
-          stalled.delete(item.requestId);
-          const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: item.requester, requestId: item.requestId, targetRound: item.targetRound, signature }, item.provingKey);
-          // Preserve the full frozen cap even when simulation sees a cheap path.
-          const gas = VERIFICATION_AND_RESERVE_GAS + ADDITIONAL_HASH_TO_CURVE_GAS * BigInt(composed.hashToCurveTries - 1) + BigInt(item.callbackGasCap);
-          if (effective < RESERVE_FULFILLS * gas * quoted.price) {
+        }
+        if (oldest) {
+          const age = latest - oldest.requestBlock;
+          const window = oldest.deadline - oldest.requestBlock;
+          for (const threshold of [25, 50] as const) {
+            const id = `pending_age:${threshold}`;
+            if (age * 100n >= window * BigInt(threshold)) await watchdog.alert(threshold === 50 ? 'page' : 'warn', 'pending_age', { ...oldest, age, threshold }, id);
+            else watchdog.clear(id);
+          }
+        } else {
+          watchdog.clear('pending_age:25');
+          watchdog.clear('pending_age:50');
+        }
+        fulfillable.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
+        let effective = 0n;
+        const cost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
+        if (fulfillable.length > 0) {
+          let reserved = 0n;
+          for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
+          effective = balance - reserved;
+        }
+        for (const item of fulfillable) {
+          if (unknownPending || inflight.size >= MAX_IN_FLIGHT || effective < cost) {
             results.push({ requestId: item.requestId, status: 'waiting' });
             continue;
           }
-          const data = encodeFunctionData({ abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature] });
-          await publicClient.simulateContract({
-            address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature],
-            account, type: 'legacy', gas, gasPrice: quoted.price,
-          });
-          const nonce = await ensureNonce();
-          const transactionHash = await publish({
-            nonce, requestId: item.requestId, hash: '0x', serialized: null, gasPrice: quoted.price, gas, submittedBlock: latest,
-            to: config.coordinator, data, value: 0n, canResign: true,
-          });
-          if (transactionHash == null) {
+          try {
+            let signature: Hex;
+            try {
+              signature = signatures.get(item.targetRound) ?? await fetchSignature(item.targetRound);
+            } catch (error) {
+              if (!(error instanceof BeaconUnavailable)) throw error;
+              if (now() < item.roundTime + 30n) {
+                results.push({ requestId: item.requestId, status: 'retry' });
+                continue;
+              }
+              if (!stalled.has(item.requestId)) {
+                stalled.add(item.requestId);
+                await probeHealth(error.relays);
+
+              }
+              await watchdog.alert('warn', 'drand_stall', { requestId: item.requestId, drandConfigId: item.drandConfigId, targetRound: item.targetRound }, `drand_stall:${item.requestId}`);
+              results.push({ requestId: item.requestId, status: 'stalled' });
+              continue;
+            }
+            stalled.delete(item.requestId);
+            watchdog.clear(`drand_stall:${item.requestId}`);
+            const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: item.requester, requestId: item.requestId, targetRound: item.targetRound, signature }, item.provingKey);
+            // Preserve the full frozen cap even when simulation sees a cheap path.
+            const gas = VERIFICATION_AND_RESERVE_GAS + ADDITIONAL_HASH_TO_CURVE_GAS * BigInt(composed.hashToCurveTries - 1) + BigInt(item.callbackGasCap);
+            if (effective < RESERVE_FULFILLS * gas * quoted.price) {
+              await watchdog.alert('page', 'low_balance', { balance, available: effective, required: RESERVE_FULFILLS * gas * quoted.price });
+              results.push({ requestId: item.requestId, status: 'waiting' });
+              continue;
+            }
+            const data = encodeFunctionData({ abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature] });
+            await publicClient.simulateContract({
+              address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature],
+              account, type: 'legacy', gas, gasPrice: quoted.price,
+            });
+            const nonce = await ensureNonce();
+            const transactionHash = await publish({
+              nonce, requestId: item.requestId, hash: '0x', serialized: null, gasPrice: quoted.price, gas, submittedBlock: latest,
+              to: config.coordinator, data, value: 0n, canResign: true,
+            });
+            if (transactionHash == null) {
+              results.push({ requestId: item.requestId, status: 'retry' });
+              continue;
+            }
+            effective -= gas * quoted.price;
+            results.push({ requestId: item.requestId, status: 'submitted', transactionHash });
+          } catch (error) {
+            if (error instanceof NonceSyncError) throw error;
             results.push({ requestId: item.requestId, status: 'retry' });
-            continue;
           }
-          effective -= gas * quoted.price;
-          results.push({ requestId: item.requestId, status: 'submitted', transactionHash });
-        } catch (error) {
-          if (error instanceof NonceSyncError) throw error;
-          results.push({ requestId: item.requestId, status: 'retry' });
         }
+        if (!rpcFailed) watchdog.clear('rpc_unhealthy');
+        return results;
+      } catch (error) {
+        await watchdog.alert('warn', 'rpc_unhealthy');
+        throw error;
       }
-      return results;
     },
   };
 }
