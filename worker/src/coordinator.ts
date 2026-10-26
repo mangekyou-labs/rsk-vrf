@@ -27,6 +27,7 @@ export const coordinatorAbi = parseAbi([
   'event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)',
   'event Refunded(bytes32 indexed requestId, uint8 reason)',
   'event FeesWithdrawn(address indexed payee, uint256 amount)',
+  'event KeyRegistered(uint32 keyId, bytes32 keyHash, address payee)',
   'event KeyStateChanged(uint32 keyId, uint8 state)',
 ]);
 
