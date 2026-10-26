@@ -5,7 +5,7 @@ Node 24+, `npm ci`, `npm run typecheck`, `npm test`.
 `npm start` runs the polling worker. Configure:
 
 - `RSK_RPC_URL`: Rootstock JSON-RPC endpoint.
-- `COORDINATOR_ADDRESS`: deployed coordinator proxy.
+- `COORDINATOR_ADDRESS`: deployed coordinator proxy. Alternatively, `COORDINATOR_DEPLOYMENT_FILE` names a `deployments/<chainId>.json` record from `contracts/script/deploy.sh`, and the worker reads the proxy address from it. The record's `chainId` must match the RPC's. Set one or the other, not both.
 - `DRAND_RELAY_URLS`: comma-separated relay base URLs tried in order. The first well-formed `/public/<round>` wins. `DRAND_RELAY_URL` sets one relay. With neither set, the process uses `https://api.drand.sh`, `https://api2.drand.sh`, and `https://api3.drand.sh`.
 - `DRAND_PIN_PUBLIC_KEY`, `DRAND_PIN_GENESIS`, `DRAND_PIN_PERIOD`: required pin of the frozen beacon. A mismatch is reported once and that config is not served.
 - `GRACE_BLOCKS`: blocks after the request's confirmations. Unset or empty is `0` (primary). A backup uses `100`.
@@ -39,6 +39,8 @@ RSK_RPC_URL=http://127.0.0.1:4444 TEST_RELAY_BIN=/tmp/rsk-vrf-test-relay npm run
 The test spawns a loopback-only Go relay signing arbitrary rounds with the **public test drand key** from `coordinator-vectors.json`; no live beacon, credentials, AWS, or network relay is needed. It deploys implementation and proxy, funds separate Requester and Fulfiller EOAs from rskj's public genesis key, registers a noble Proving Key, and fulfills through the worker. It checks that a future round is retained; a wrong-round signature fails real `eth_call` without changing the Fulfiller nonce; retry fulfills; and onchain Beta and `deriveRandom` match the independent pinned Go prover. It also checks Payee settlement and withdrawal, mines past the frozen Deadline, refunds after a fee change, and verifies that the worker retains an outcome for twelve blocks and keeps expired Pending requests without sending. Further cases check that the worker holds every Active and Draining key at startup, follows `KeyStateChanged` (evicting a Revoked key, loading a new Active one), and reports a missing secret or load failure as not held without exposing provider error messages.
 
 The same regtest flow populates custom Admin parameters, a second drand config, a pending ownership transfer, and a Pending request. It mines a rejected non-Admin upgrade, upgrades the proxy as the Admin, checks that state, earned fees and prior Beta survive, and fulfills the pre-upgrade request with an independently cross-checked Beta. The upgrade target is a test-only `VRFCoordinatorV2` contract.
+
+`deploy.test.ts` runs `contracts/script/deploy.sh` against the node with a Safe stand-in contract. It checks the written deployment record against the receipts. It then requires `CheckDeployment` to fail before the stand-in accepts ownership, pass after it, and fail on an edited record. See [the deploy guide](../docs/development/deploy.md).
 
 The committed golden traces bind chain 31, fixed addresses and timestamps. They cannot be used verbatim on a dynamic chain-33 deployment. Worker unit tests reproduce their Alpha, proof bytes and Beta exactly; a Go regression test binds the fake relay's expected-value endpoint to the same golden trace. The live test asks that independent Go endpoint to bind the actual chain, addresses, request ID and round. Worker time is injected only to exercise future-round waiting immediately; the coordinator still verifies the real BLS signature and noble proof on rskj.
 
