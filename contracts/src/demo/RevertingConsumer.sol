@@ -6,8 +6,8 @@ import {VRFCoordinator} from "../VRFCoordinator.sol";
 
 /// @title RevertingConsumer
 /// @notice Demo only; unaudited testnet pilot, do not use for value. Its callback always
-///   reverts, to show that the coordinator emits `CallbackFailed` while fulfillment and
-///   the fee still settle.
+///   reverts, to show that the coordinator emits `CallbackFailed` while the request is
+///   still Fulfilled and its fee is credited to the Payee.
 contract RevertingConsumer is VRFConsumer {
     error RejectedBeta(bytes32 requestId);
 

@@ -26,7 +26,7 @@ export DEMO_PRIVATE_KEY=0x...   # a throwaway key holding faucet tRBTC
 | `GO_VRF_URL` | Go test relay for the noble and Go cross-check in `recompute-beta`. |
 | `EXPLORER_TX_URL` | Explorer transaction URL prefix. Overrides the default. |
 | `POLL_MS` | How often to poll off regtest. Default 10000. On regtest (chain 33) the scripts mine their own blocks. |
-| `REQUEST_ID` | Request for `recompute-beta`. If unset, the script makes a new one. |
+| `REQUEST_ID` | Request for `recompute-beta`; if unset, the script makes a new one. For `withdraw-fees`, the request whose fee was credited: the script withdraws for the Payee of the Proving Key that served it. |
 | `PAYEE`, `WITHDRAW_TX` | Used by `withdraw-fees`; see below. |
 
 Each fulfillment needs the operator's worker to be running against the same coordinator. On testnet a request waits for its confirmations and drand round, which takes a few minutes.
@@ -38,12 +38,12 @@ Run each one from `worker/` with `npm run demo:<name>`.
 1. **`dice`** deploys `DemoDice` and rolls with the exact fee. When the worker fulfills, the callback stores Beta and emits `Rolled`. The script checks that the stored Beta matches the coordinator's, and that `face(requestId)` is in 1..6 and equals `deriveRandomInRange(requestId, keccak256("rsk-vrf/demo/dice"), 1, 6)`.
 2. **`read-path`** has the EOA call `request(tag)` without a callback. While the request is Pending, `deriveRandomBytes` reverts with `RequestPending`. After fulfillment the script reads the request through `deriveRandomBytes`, `deriveRandom` and `deriveRandomInRange(1, 100)`.
 3. **`reverting-consumer`** deploys `RevertingConsumer`, whose callback always reverts. Fulfillment emits `CallbackFailed`, the request is still Fulfilled, and the fee is credited to the Payee in the fulfill block.
-4. **`withdraw-fees`** withdraws the Payee's credited fees.
+4. **`withdraw-fees`** withdraws the fees credited to a Payee. Set `REQUEST_ID` to the request whose fee was credited (for example the one `reverting-consumer` printed). The script looks up the Proving Key that served it and withdraws for that key's Payee. That key need not be the Active key any more. `PAYEE` names the Payee directly instead.
    - If `DEMO_PRIVATE_KEY` is the Payee, it sends `withdrawFees()` itself.
    - Otherwise (for example, when the Payee is the Admin Safe), it prints the Safe transaction: to the coordinator, value 0, data `0x476343ee`. It then exits with code 3. Propose and execute that transaction in the Safe, then rerun with `WITHDRAW_TX=<hash>` to verify it.
-   - Either way, the script checks that `FeesWithdrawn` was emitted and that the Payee balance is zero afterwards. `PAYEE` overrides which Payee it reads.
-5. **`recompute-beta`** recomputes a request's Beta without the worker's code. It decodes the proof and drand signature from the fulfill calldata and checks the proof's public key against the registered key hash. It checks the signature against `DRAND_RELAY_URL` for the request's target round, rebuilds Alpha, and derives Beta from Gamma with noble. Beta must equal the stored Beta.
-6. **`rejections`** shows the coordinator rejecting bad fulfillments. Each one is sent as a real transaction with an explicit gas limit of 1,000,000 and mined as reverted. The script reads back each error by replaying the transaction at its block.
+   - Either way, the script checks that `FeesWithdrawn` was emitted and that the Payee balance is zero afterwards.
+5. **`recompute-beta`** recomputes a request's Beta without the worker's code. It decodes the proof and drand signature from the fulfill calldata and checks the proof's public key against the registered key hash. It checks the signature against `DRAND_RELAY_URL` for the request's target round and rebuilds Alpha. On every chain it then verifies the proof (Gamma, c, s) over that Alpha and the Proving Key's public key with its own ECVRF verifier, `worker/demo/ecvrf.ts`. That verifier follows `VRF.sol` with noble primitives and shares no code with the worker's prover. Finally it derives Beta from Gamma, which must equal the stored Beta. `RESULT` reports `proofVerified: true`.
+6. **`rejections`** shows the coordinator rejecting bad fulfillments. Each one is sent as a real transaction with an explicit gas limit of 1,000,000 (`REJECTION_GAS_LIMIT`) and mined as reverted. The script reads back each error by replaying the transaction at its block, and asserts it is the case's expected error below.
 
    | Case | Kind | Expected error |
    | --- | --- | --- |
@@ -53,7 +53,15 @@ Run each one from `worker/` with `npm run demo:<name>`.
    | wrong drand round | mismatched | `InvalidDrandSignature` |
    | repeat on Fulfilled A | repeated | `RequestNotPending(2)` |
 
-   The script fulfills request A first, then sends all five transactions in the first block where request B can be fulfilled, so they land before the operator fulfills B. On regtest the script mines that block itself. On a live chain the worker may fulfill B first. If that happens, the cases on B revert with `RequestNotPending(2)` instead, and the script's assertions fail. Rerun it.
+   **Isolation.** On regtest the Proving Key is the public test key, so the script proves B itself, producing the same proof the operator later sends. Each case on B is then that valid fulfillment with exactly one thing changed:
+   - corrupted gamma changes only Gamma's x;
+   - corrupted s changes only s;
+   - A's proof on B swaps in A's proof;
+   - wrong drand round swaps in the previous round's signature.
+
+   `RESULT` reports `isolated: true`. On other chains the key is secret, so the script falls back to building the cases from A's proof. It prints `not isolated` and reports `isolated: false`. Those cases are then also over the wrong Alpha, but the first check they fail, and so the expected error, is the same.
+
+   **Timing.** The script fulfills request A first, then sends all five transactions in the first block where request B is Fulfillable, so they land before the operator fulfills B. On regtest the script mines that block itself. On a live chain the worker may fulfill B first. The script detects this: B is no longer Pending before it broadcasts, or a rejection lands in or after B's fulfill block. It then stops with "the operator's worker fulfilled B before the rejections landed ... rerun rejections". Rerun it.
 
 ## The noble and Go cross-check
 
