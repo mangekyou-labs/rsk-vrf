@@ -13,7 +13,13 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "test:integration": "node --test --test-concurrency=1 integration/*.test.ts",
-    "start": "node src/run.ts"
+    "start": "node src/run.ts",
+    "demo:dice": "node demo/dice.ts",
+    "demo:read-path": "node demo/read-path.ts",
+    "demo:reverting-consumer": "node demo/reverting-consumer.ts",
+    "demo:withdraw-fees": "node demo/withdraw-fees.ts",
+    "demo:recompute-beta": "node demo/recompute-beta.ts",
+    "demo:rejections": "node demo/rejections.ts"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1156.0",

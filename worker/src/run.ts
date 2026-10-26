@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Polling worker. Each poll backfills from the chain; proving keys load from Secrets Manager.
+import { readFileSync } from 'node:fs';
 import { KMSClient } from '@aws-sdk/client-kms';
 import { SSMClient } from '@aws-sdk/client-ssm';
-import { createPublicClient, defineChain, getAddress, http, type Hex } from 'viem';
+import { createPublicClient, defineChain, getAddress, http, type Address, type Hex } from 'viem';
 import { privateKeyToAccount, type LocalAccount } from 'viem/accounts';
+import { coordinatorFromDeployment } from './deployment.ts';
 import { kmsAccount } from './kms-signer.ts';
 import { applyParameters, isPlaceholder, loadParameters } from './parameters.ts';
 import { AwsSecretSource, EMPTY_SECRET_MESSAGE, provingKeyLoader } from './secrets.ts';
@@ -49,6 +51,19 @@ function relayUrls(): string[] {
   return raw.map(item => new URL(item.trim()).toString().replace(/\/$/, ''));
 }
 
+/** COORDINATOR_ADDRESS, or the proxy in a deploy.sh record at COORDINATOR_DEPLOYMENT_FILE. */
+function coordinatorAddress(): (chainId: number) => Address {
+  const address = process.env.COORDINATOR_ADDRESS;
+  const file = process.env.COORDINATOR_DEPLOYMENT_FILE;
+  if (address && file) throw new Error('Invalid coordinator');
+  if (file) {
+    const text = readFileSync(file, 'utf8');
+    return chainId => coordinatorFromDeployment(text, chainId);
+  }
+  const coordinator = getAddress(required('COORDINATOR_ADDRESS').toLowerCase());
+  return () => coordinator;
+}
+
 function graceBlocks(): number {
   const raw = process.env.GRACE_BLOCKS;
   if (raw === undefined || raw === '') return 0;
@@ -85,10 +100,11 @@ async function main() {
   const grace = graceBlocks();
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
-  const coordinator = getAddress(required('COORDINATOR_ADDRESS').toLowerCase());
+  const coordinatorFor = coordinatorAddress();
   const fulfiller = await loadFulfiller();
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
+  const coordinator = coordinatorFor(chainId);
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
   // Every Active and Draining key loads at startup and again on KeyStateChanged,
   // so a Draining key keeps serving after rotation.

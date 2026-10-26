@@ -1,3 +1,7 @@
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+
+# Only the chain 31 record is committed; regtest rehearsals write here too.
+/deployments/*
+!/deployments/31.json
