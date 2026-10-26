@@ -95,6 +95,28 @@ jobs:
       - name: Test
         run: npm test
 
+  infra:
+    name: Infra
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.7
+      - name: Format
+        run: terraform fmt -check -recursive
+      - name: Validate
+        run: terraform init -backend=false -input=false && terraform validate
+      - name: Compose file
+        run: |
+          printf '%s\n' AWS_REGION=eu-central-1 LOG_GROUP=/rsk-vrf/primary RSK_NETWORK=testnet \
+            SSM_CONFIG_PATH=/rsk-vrf/primary/ FULFILLER_KMS_KEY_ID=alias/rsk-vrf-primary-fulfiller \
+            "WORKER_IMAGE=ghcr.io/mangekyou-labs/rsk-vrf-worker@sha256:$(printf '%064d' 0)" > "$RUNNER_TEMP/compose.env"
+          docker compose -f compose/compose.yaml --env-file "$RUNNER_TEMP/compose.env" --profile import config --quiet
+
   worker-regtest:
     name: Worker on rskj regtest
     runs-on: ubuntu-latest

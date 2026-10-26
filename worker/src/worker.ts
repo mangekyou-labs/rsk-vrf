@@ -1,6 +1,6 @@
 import { createPublicClient, decodeFunctionData, encodeFunctionData, http, parseAbiItem, type AbiEvent, type Address, type Chain, type Hex } from 'viem';
 import { sendRawTransaction } from 'viem/actions';
-import { privateKeyToAccount } from 'viem/accounts';
+import { privateKeyToAccount, type LocalAccount } from 'viem/accounts';
 import { composeFulfillment, coordinatorAbi, KeyState, servesKey } from './coordinator.ts';
 import type { ProvingKey } from './proving-key.ts';
 import { createWatchdog, type WatchdogConfig } from './watchdog.ts';
@@ -17,7 +17,10 @@ export interface WorkerConfig {
   watchdog?: WatchdogConfig;
   coordinator: Address;
   chain: Chain;
-  fulfillerPrivateKey: Hex;
+  /** Fulfiller EOA key for development and regtest. Exactly one of this or `fulfillerAccount` is required. */
+  fulfillerPrivateKey?: Hex;
+  /** Fulfiller account that signs elsewhere, such as the KMS one in production. */
+  fulfillerAccount?: LocalAccount;
   /** Loads the Proving Key for a registered keyHash from the secret store. Resolves
    * undefined if the store does not hold it; rejects on any other failure. */
   loadProvingKey: (keyHash: Hex) => Promise<ProvingKey | undefined>;
@@ -140,7 +143,8 @@ function replacementPrice(previous: bigint, cap: bigint | null): bigint | null {
 /** Stateless backfill. An id stays until Fulfilled or Refunded is 12 blocks deep. */
 export function createWorker(config: WorkerConfig) {
   const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl), cacheTime: 0 });
-  const account = privateKeyToAccount(config.fulfillerPrivateKey);
+  if ((config.fulfillerAccount == null) === (config.fulfillerPrivateKey == null)) throw new Error('Configure exactly one Fulfiller');
+  const account = config.fulfillerAccount ?? privateKeyToAccount(config.fulfillerPrivateKey!);
   const pending = new Map<Hex, { outcomeBlock: bigint | null }>();
   const finished = new Map<Hex, bigint>();
   const reportedGone = new Set<Hex>();

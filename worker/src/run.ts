@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Polling worker. Each poll backfills from the chain; proving keys load from Secrets Manager.
+import { KMSClient } from '@aws-sdk/client-kms';
+import { SSMClient } from '@aws-sdk/client-ssm';
 import { createPublicClient, defineChain, getAddress, http, type Hex } from 'viem';
-import { ProvingKey } from './proving-key.ts';
-import { AwsSecretSource, secretName } from './secrets.ts';
-import { parseKeyHash } from './types.ts';
+import type { LocalAccount } from 'viem/accounts';
+import { kmsAccount } from './kms-signer.ts';
+import { applyParameters, loadParameters } from './parameters.ts';
+import { AwsSecretSource, provingKeyLoader } from './secrets.ts';
 import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
 import { runWorkerLoop } from './loop.ts';
 import { jsonLine, type WatchdogConfig } from './watchdog.ts';
@@ -40,7 +43,21 @@ function graceBlocks(): number {
   return Number(raw);
 }
 
+/** fulfiller is the KMS key when FULFILLER_KMS_KEY_ID is set, else FULFILLER_PRIVATE_KEY (development only). */
+async function fulfiller(): Promise<{ fulfillerAccount: LocalAccount } | { fulfillerPrivateKey: Hex }> {
+  const keyId = process.env.FULFILLER_KMS_KEY_ID;
+  const privateKey = process.env.FULFILLER_PRIVATE_KEY;
+  delete process.env.FULFILLER_PRIVATE_KEY;
+  if (keyId && privateKey) throw new Error('Configure exactly one Fulfiller');
+  if (keyId) return { fulfillerAccount: await kmsAccount({ kms: new KMSClient({}), keyId }) };
+  if (!privateKey || !/^0x[0-9a-fA-F]{64}$/.test(privateKey)) throw new Error('Invalid Fulfiller key');
+  return { fulfillerPrivateKey: privateKey as Hex };
+}
+
 async function main() {
+  // On the hosts, configuration lives in SSM Parameter Store under this path.
+  const parameterPath = process.env.SSM_CONFIG_PATH;
+  if (parameterPath) applyParameters(process.env, await loadParameters({ ssm: new SSMClient({}), path: parameterPath }));
   const pin = drandPin();
   const watchdog: WatchdogConfig = {
     pageUrl: new URL(required('ALERT_PAGE_URL')).toString(),
@@ -56,30 +73,15 @@ async function main() {
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
   const coordinator = getAddress(required('COORDINATOR_ADDRESS').toLowerCase());
-  const fulfillerPrivateKey = required('FULFILLER_PRIVATE_KEY') as Hex;
-  delete process.env.FULFILLER_PRIVATE_KEY;
-  if (!/^0x[0-9a-fA-F]{64}$/.test(fulfillerPrivateKey)) throw new Error('Invalid Fulfiller key');
+  const signer = await fulfiller();
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
   // Every Active and Draining key loads at startup and again on KeyStateChanged,
   // so a Draining key keeps serving after rotation.
-  const secrets = new AwsSecretSource();
-  const loadProvingKey = async (keyHash: Hex) => {
-    const parsed = parseKeyHash(keyHash);
-    if (!parsed) throw new Error('Invalid key hash');
-    let secret: string;
-    try {
-      secret = await secrets.load(secretName(parsed));
-    } catch (error) {
-      // A key this deployment does not hold is not an error.
-      if (error instanceof Error && error.name === 'ResourceNotFoundException') return undefined;
-      throw error;
-    }
-    return ProvingKey.fromHex(secret);
-  };
+  const loadProvingKey = provingKeyLoader(new AwsSecretSource());
   const worker = createWorker({
-    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, loadProvingKey, drandPin: pin, graceBlocks: grace, watchdog,
+    rpcUrl, relayUrls: relays, coordinator, chain, ...signer, loadProvingKey, drandPin: pin, graceBlocks: grace, watchdog,
     report: line => process.stderr.write(`${line}\n`),
   });
   const stop = new AbortController();
