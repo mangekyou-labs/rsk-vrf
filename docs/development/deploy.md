@@ -30,7 +30,7 @@ It then writes `deployments/<chainId>.json`. The record holds:
 
 Only `deployments/31.json` is tracked by git. Set `DEPLOYMENT_FILE` to write elsewhere.
 
-Rootstock takes legacy transactions only, and its block gas limit is 6.8M. The script sends legacy transactions with a 110% gas margin, because forge's default 130% puts the implementation's creation over that limit.
+Rootstock takes legacy transactions only. The script sends legacy transactions with a 110% gas margin. The implementation's creation takes about 5.7M gas, and forge's default 130% margin puts it over the 6.8M block gas limit of rskj regtest. The testnet block gas limit is 12M.
 
 ## 2. Verify (chain 31 only)
 

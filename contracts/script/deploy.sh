@@ -30,8 +30,8 @@ export DEPLOYMENT_FILE=${DEPLOYMENT_FILE:-../deployments/$chain_id.json}
 mkdir -p "$(dirname "$DEPLOYMENT_FILE")"
 
 # Rootstock takes legacy transactions only. --slow sends each one after the last is mined.
-# Forge's default 130% gas margin puts the implementation's creation above Rootstock's
-# 6.8M block gas limit; 110% stays under it.
+# The implementation's creation takes about 5.7M gas. Forge's default 130% margin puts it
+# above the 6.8M block gas limit of rskj regtest; 110% stays under it. Testnet's limit is 12M.
 forge script script/DeployCoordinator.s.sol:DeployCoordinator --rpc-url "$RPC_URL" \
   --broadcast --legacy --slow --gas-estimate-multiplier 110 \
   --sig "run(address,uint256[2])" "$safe" "[$key_x,$key_y]" "$@"
