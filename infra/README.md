@@ -9,7 +9,8 @@ peers); operators reach the hosts through SSM Session Manager, never SSH.
 | Path | What it is |
 | --- | --- |
 | `main.tf`, `variables.tf` | The two regions and their inputs |
-| `operator.tf` | `rsk-vrf-operator` role: key admin, writes Secrets and parameters, cannot sign |
+| `operator.tf` | `rsk-vrf-operator` role: manages the Fulfiller keys, Proving Key secrets and alert parameters; cannot sign, read a Proving Key or reach a host |
+| `host-access.tf` | `rsk-vrf-host-access` role: a shell on the hosts, which is as good as signing as either Fulfiller |
 | `modules/worker-host/` | One host: VPC, security group, EC2, data volume, KMS key, IAM, parameters, secrets, logs |
 | `modules/worker-host/cloud-init.yaml.tftpl` | Mounts `/data`, installs Docker, writes the `rsk-vrf` systemd unit |
 | `compose/compose.yaml` | rskj (`VETIVER-9.0.4`, pinned by digest) and the worker (pinned by digest) |
@@ -28,7 +29,9 @@ from then on.
    in its job summary. The GHCR package must be public, or the hosts cannot pull it.
 3. Copy `terraform.tfvars.example` to `terraform.tfvars` and fill in
    `worker_image` (the `@sha256:` form), `coordinator_address`, `drand_pin` and
-   `proving_key_hashes` (lowercase keyHashes).
+   `proving_key_hashes` (lowercase keyHashes). Set `ghcr_owner` if the image is
+   not under `mangekyou-labs`: the hosts run only
+   `ghcr.io/<ghcr_owner>/rsk-vrf-worker@sha256:<digest>` and refuse anything else.
 
 ## Apply
 
@@ -40,12 +43,20 @@ terraform apply tfplan
 terraform output
 ```
 
-Run this with administrator credentials. Day-to-day work afterwards uses the
-operator role (`terraform output operator_role_arn`, MFA required).
+Run this with credentials that can create IAM roles, KMS keys and EC2
+instances. Afterwards there are two roles, both needing MFA:
+
+- `rsk-vrf-operator` (`terraform output operator_role_arn`) for day-to-day work:
+  Fulfiller keys, Proving Key secrets, alert parameters and logs.
+- `rsk-vrf-host-access` (`terraform output host_access_role_arn`) for a shell on
+  a host (Import Sync, restarts, debugging). A host shell runs as the host role,
+  so this role can sign as either Fulfiller and read every Proving Key. Grant it
+  only to people you would trust with the Fulfiller keys.
 
 ## After the first apply
 
 Run these once per host (`primary` in eu-central-1, `backup` in us-east-1).
+Steps 1 to 3 use the operator role; step 5 uses the host-access role.
 
 1. Derive the Fulfiller address from the KMS public key, using the worker image:
 
@@ -93,7 +104,16 @@ parameter or secret change.
 
 rskj's `--import` deletes the database and imports a snapshot on every start
 while the flag is set, so it runs as a separate one-shot `rskj-import` service
-that is never left running. In a shell on the host
+that is never left running.
+
+It stays manual. With `--import`, rskj imports and then keeps running as the
+node; there is no exit to wait for, and any restart before the flag is removed
+deletes the database and imports again. A boot script would have to judge from
+the logs when the import has finished and the node is syncing, and get that
+wrong at the cost of another multi-hour import. Someone watching does it once
+per host.
+
+In a shell on the host, with the host-access role
 (`aws ssm start-session --target <instance_id>`):
 
 ```sh
@@ -109,8 +129,14 @@ sudo /usr/local/bin/rsk-vrf-up
 ## Deploying a new worker image
 
 Set `worker_image` to the new digest, `terraform apply` (this only changes the
-`/rsk-vrf/<host>/host/WORKER_IMAGE` parameter), then `systemctl restart rsk-vrf`
-on each host. Roll `backup` first and check it before `primary`.
+`/rsk-vrf/<host>/host/WORKER_IMAGE` parameter), then, with the host-access role,
+`systemctl restart rsk-vrf` on each host. Roll `backup` first and check it
+before `primary`.
+
+`WORKER_IMAGE` is Terraform's alone: the operator role is denied writes under
+`/rsk-vrf/<host>/host/`, and `rsk-vrf-up` refuses any image that is not
+`ghcr.io/<ghcr_owner>/rsk-vrf-worker@sha256:<64 hex>`. Whoever chooses the image
+can sign as the host's Fulfiller.
 
 ## Things to know
 
@@ -118,9 +144,17 @@ on each host. Roll `backup` first and check it before `primary`.
   protection. Losing a key loses its Fulfiller address.
 - Only the host's own role can call `kms:Sign` on its key; the key policy denies
   everyone else, including the account root. The operator role cannot sign,
-  create grants or change key policies. An operator with an SSM shell on a host
-  can still use the host's role from that shell.
-- The operator role can write Secrets but not read them.
+  create grants or change key policies, and has no shell on the hosts. The
+  host-access role does, and from that shell it can use the host role.
+- The operator role can create, write and delete Proving Key secrets but not
+  read them. The host-access role can read them through a host shell. When you
+  delete a secret, also remove its keyHash from `proving_key_hashes`, or the
+  next apply recreates it empty.
+- The operator role may write only the alert parameters, `OWN_FULFILLER_ADDRESSES`
+  and `ALERT_PAGE_TOKEN`. Everything else under `/rsk-vrf/` is Terraform's.
+- The operator role can create secp256k1 KMS keys tagged `Project=rsk-vrf`. A new
+  key is inert until a Terraform change points a host at it, but its address can
+  be derived and funded beforehand.
 - Instances ignore AMI updates. Replacing a host keeps its data volume and key,
   but rskj and the worker restart.
 - rskj RPC is published on the host's loopback only (`127.0.0.1:4444`).

@@ -2,7 +2,7 @@
 # denies kms:Sign to every other principal, whatever IAM grants them.
 data "aws_iam_policy_document" "fulfiller_key" {
   statement {
-    sid       = "AccountAdministersThroughIam"
+    sid       = "AccountManagesThroughIam"
     actions   = ["kms:*"]
     resources = ["*"]
     principals {
