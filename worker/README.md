@@ -40,6 +40,8 @@ The test spawns a loopback-only Go relay signing arbitrary rounds with the **pub
 
 The same regtest flow populates custom Admin parameters, a second drand config, a pending ownership transfer, and a Pending request. It mines a rejected non-Admin upgrade, upgrades the proxy as the Admin, checks that state, earned fees and prior Beta survive, and fulfills the pre-upgrade request with an independently cross-checked Beta. The upgrade target is a test-only `VRFCoordinatorV2` contract.
 
+`deploy.test.ts` runs `contracts/script/deploy.sh` against the node with a Safe stand-in contract. It checks the written deployment record against the receipts. It then requires `CheckDeployment` to fail before the stand-in accepts ownership, pass after it, and fail on an edited record. See [the deploy guide](../docs/development/deploy.md).
+
 The committed golden traces bind chain 31, fixed addresses and timestamps. They cannot be used verbatim on a dynamic chain-33 deployment. Worker unit tests reproduce their Alpha, proof bytes and Beta exactly; a Go regression test binds the fake relay's expected-value endpoint to the same golden trace. The live test asks that independent Go endpoint to bind the actual chain, addresses, request ID and round. Worker time is injected only to exercise future-round waiting immediately; the coordinator still verifies the real BLS signature and noble proof on rskj.
 
 ## Watchdog and alert delivery
