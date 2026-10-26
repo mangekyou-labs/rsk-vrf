@@ -1,0 +1,64 @@
+# One worker host: an rskj node and the worker beside it.
+#
+# Terraform installs this file as /opt/rsk-vrf/compose.yaml. The host writes
+# host.env (region, SSM path, KMS key, log group) at boot, and rsk-vrf-up writes
+# worker-image.env from SSM before every start. See infra/README.md.
+name: rsk-vrf
+
+x-logging: &logging
+  driver: awslogs
+  options:
+    awslogs-region: ${AWS_REGION:?}
+    awslogs-group: ${LOG_GROUP:?}
+    awslogs-create-group: "false"
+    tag: "{{.Name}}"
+
+x-rskj: &rskj
+  image: rsksmart/rskj:VETIVER-9.0.4@sha256:249a44ad78fbf1a92856479d028fb41ecc176d4133c319e711697b01b7f77df0
+  environment:
+    DEFAULT_JVM_OPTS: -Xms4G -Xmx4G
+    # The image binds RPC to 0.0.0.0 inside the container; the port mapping keeps
+    # it on host loopback. "rskj" is the Host header the worker sends.
+    RSKJ_SYS_PROPS: >-
+      -Drpc.providers.web.http.bind_address=0.0.0.0
+      -Drpc.providers.web.http.hosts.0=localhost
+      -Drpc.providers.web.http.hosts.1=127.0.0.1
+      -Drpc.providers.web.http.hosts.2=rskj
+  ports:
+    - 127.0.0.1:4444:4444
+    - 50505:50505/tcp
+    - 50505:50505/udp
+  volumes:
+    # The image's home is /var/lib/rsk, so the database lands in .rsk/<network>/database.
+    - /data/rskj:/var/lib/rsk/.rsk
+  stop_grace_period: 2m
+  logging: *logging
+
+services:
+  rskj:
+    <<: *rskj
+    command: ["--${RSK_NETWORK:?}"]
+    restart: unless-stopped
+
+  # Import Sync, run once by hand with the rskj service stopped. --import deletes
+  # the database and downloads a snapshot, and does so on every start while set,
+  # so this service never restarts by itself. See infra/README.md.
+  rskj-import:
+    <<: *rskj
+    profiles: [import]
+    command: ["--${RSK_NETWORK:?}", "--import"]
+    restart: "no"
+
+  worker:
+    image: ${WORKER_IMAGE:?}
+    depends_on: [rskj]
+    restart: unless-stopped
+    environment:
+      AWS_REGION: ${AWS_REGION:?}
+      SSM_CONFIG_PATH: ${SSM_CONFIG_PATH:?}
+      FULFILLER_KMS_KEY_ID: ${FULFILLER_KMS_KEY_ID:?}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging: *logging
