@@ -79,8 +79,8 @@ export async function connect(script: string) {
   }
 
   /** Broadcasts a legacy transaction with an explicit gas limit and prints its link. */
-  async function broadcast(label: string, tx: { to?: Address; data: Hex; value?: bigint; gas: bigint }): Promise<Hex> {
-    const hash = await wallet.sendTransaction({ to: tx.to ?? null, data: tx.data, value: tx.value ?? 0n, gas: tx.gas, gasPrice: await gasPrice(), type: 'legacy' } as never);
+  async function broadcast(label: string, tx: { to?: Address; data: Hex; value?: bigint; gas: bigint; nonce?: number }): Promise<Hex> {
+    const hash = await wallet.sendTransaction({ to: tx.to ?? null, data: tx.data, value: tx.value ?? 0n, gas: tx.gas, gasPrice: await gasPrice(), type: 'legacy', nonce: tx.nonce } as never);
     console.log(`${label}: ${txLink(chainId, hash)}`);
     return hash;
   }

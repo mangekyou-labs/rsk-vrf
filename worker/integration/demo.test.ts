@@ -195,5 +195,49 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     assert.equal(verified.result.payee.toLowerCase(), safe.toLowerCase());
     assertPresented(verified.output, [withdrawn.transactionHash]);
   });
+
+  it('recompute Beta: the on-chain proof and published inputs give the stored Beta, and the noble and Go provers agree', { timeout: 120_000 }, async () => {
+    const { code, output, result } = await demo('recompute-beta', { GO_VRF_URL: relayUrl });
+    assert.equal(code, 0, output);
+    const requestId = result.requestId as Hex;
+    const stored = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [requestId] }) as { status: number; beta: Hex; requester: Address; targetRound: bigint };
+    assert.equal(stored.status, 2);
+    assert.equal(result.beta, stored.beta, 'the recomputed Beta is the stored one');
+    // The Go helper proves the same request on its own; its Beta must be the chain's.
+    const query = new URLSearchParams({ chainId: '33', round: String(stored.targetRound), coordinator, requester: stored.requester, requestId, context: `0x${'00'.repeat(32)}` });
+    const expected = await (await fetch(`${relayUrl}/expected?${query}`)).json() as { beta: Hex; alpha: Hex };
+    assert.equal(expected.beta, stored.beta, 'the Go prover derives the same Beta');
+    assert.equal(result.alpha, expected.alpha);
+    assert.equal(result.goVerified, true, 'the Go verifier accepts the on-chain proof');
+    assert.equal(result.proversMatch, true, 'the Go proof bytes equal the noble proof on chain');
+    assertPresented(output, [result.fulfillTx]);
+  });
+
+  it('rejections: invalid, mismatched and repeated fulfillments are mined and reverted with their errors', { timeout: 180_000 }, async () => {
+    const { code, output, result } = await demo('rejections');
+    assert.equal(code, 0, output);
+    const expected: Record<string, string> = {
+      'corrupted gamma': 'gamma is not on curve',
+      'corrupted s': 'addr(c*pk+s*g)!=_uWitness',
+      "A's proof on B": 'Second mul check failed',
+      'wrong drand round': 'InvalidDrandSignature',
+      'repeat on Fulfilled A': 'RequestNotPending(2)',
+    };
+    const rejections = result.rejections as { case: string; tx: Hex; error: string }[];
+    assert.deepEqual(Object.fromEntries(rejections.map(r => [r.case, r.error])), expected);
+    const fulfilledB = await client.getTransactionReceipt({ hash: result.fulfillTxB });
+    for (const rejection of rejections) {
+      const mined = await client.getTransactionReceipt({ hash: rejection.tx });
+      assert.equal(mined.status, 'reverted', `${rejection.case} was mined and reverted`);
+      assert.ok(mined.blockNumber < fulfilledB.blockNumber, `${rejection.case} landed while B was still Pending`);
+      const sent = await client.getTransaction({ hash: rejection.tx });
+      assert.equal(sent.to?.toLowerCase(), coordinator.toLowerCase());
+    }
+    for (const id of [result.requestIdA, result.requestIdB] as Hex[]) {
+      const stored = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [id] }) as { status: number };
+      assert.equal(stored.status, 2, 'the rejections changed nothing: both requests end Fulfilled by the operator');
+    }
+    assertPresented(output, rejections.map(r => r.tx));
+  });
 });
 
