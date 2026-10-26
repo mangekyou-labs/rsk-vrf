@@ -99,9 +99,9 @@ contract FeesCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reent
         uint96 fee,
         uint32 callbackGasCap
     );
-    event FeeConfigSet(uint96 amount);
-    event ConfirmationsSet(uint16 confirmations);
-    event TimeoutBlocksSet(uint48 timeoutBlocks);
+    event FeeConfigChanged(uint96 amount);
+    event ConfirmationsChanged(uint16 confirmations);
+    event TimeoutBlocksChanged(uint48 timeoutBlocks);
     event Refunded(bytes32 indexed requestId, RefundReason reason);
     event FeesWithdrawn(address indexed payee, uint256 amount);
     event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller);
@@ -153,21 +153,21 @@ contract FeesCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reent
         // forge-lint: disable-next-line(unsafe-typecast)
         uint96 boundedAmount = uint96(amount);
         _storage().fee = boundedAmount;
-        emit FeeConfigSet(boundedAmount);
+        emit FeeConfigChanged(boundedAmount);
     }
 
     /// @notice Changes the confirmation wait for new requests only.
     function setConfirmations(uint16 value) external onlyOwner {
         if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
         _storage().confirmations = value;
-        emit ConfirmationsSet(value);
+        emit ConfirmationsChanged(value);
     }
 
     /// @notice Changes the lifetime in blocks for new requests only.
     function setTimeoutBlocks(uint48 value) external onlyOwner {
         if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
         _storage().timeoutBlocks = value;
-        emit TimeoutBlocksSet(value);
+        emit TimeoutBlocksChanged(value);
     }
 
     /// @notice Registers a Proving Key and makes it Active; the previous Active Key

@@ -7,7 +7,8 @@ libs = ["lib"]
 solc_version = "0.8.30"
 evm_version = "paris"
 optimizer = true
-optimizer_runs = 200
+# Low runs keep VRFCoordinator under the EIP-170 24,576-byte code size limit.
+optimizer_runs = 50
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",

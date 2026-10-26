@@ -46,7 +46,7 @@ async function setup() {
         case 'eth_call': {
           const decoded = decodeFunctionData({ abi: coordinatorAbi, data: call.params[0].data });
           if (decoded.functionName === 'getRequest') { state.requestReads++; result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getRequest', result: { requester: address, status: state.status, callbackGasCap: state.callbackGasCap, requestBlock: Number(state.requestBlock), drandConfigId: 0, fee: 0n, targetRound: 1n, deadline: 5000, confirmations: 2, keyId: 1, beta: zero } }); }
-          else if (decoded.functionName === 'getProvingKey') result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getProvingKey', result: [key.keyHash, address, 1] });
+          else if (decoded.functionName === 'getProvingKey') result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getProvingKey', result: decoded.args[0] === 1 ? [key.keyHash, address, 1, 0] : [zero, zero.slice(0, 42) as typeof address, 0, 0] });
           else if (decoded.functionName === 'getDrandConfig') result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getDrandConfig', result: pin });
           else { state.simulationGas.push(BigInt(call.params[0].gas)); if (state.simulationFails) throw Error('simulation reverted'); result = '0x'; }
           break;
@@ -60,7 +60,7 @@ async function setup() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const rpcUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const chain = defineChain({ id: 33, name: 'test', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  const makeWorker = () => createWorker({ rpcUrl, coordinator: address, chain, fulfillerPrivateKey: `0x${'34'.repeat(32)}`, provingKey: key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
+  const makeWorker = () => createWorker({ rpcUrl, coordinator: address, chain, fulfillerPrivateKey: `0x${'34'.repeat(32)}`, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
   return { state, server, makeWorker };
 }
 it('keeps an outcome pending for twelve blocks regardless of request confirmation wait', () => scenario(async ({ state, makeWorker }) => {

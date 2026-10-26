@@ -4,9 +4,8 @@ pragma solidity 0.8.30;
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {BLS} from "./vendor/bls-bn254/BLS.sol";
 import {VRF} from "./vendor/chainlink/VRF.sol";
-import {DrandEvmnet} from "./DrandEvmnet.sol";
+import {DrandEvmnet, DrandEvmnetVerifier} from "./DrandEvmnet.sol";
 import {VRFDerivation} from "./VRFDerivation.sol";
 
 /// @title VRFCoordinator
@@ -14,7 +13,8 @@ import {VRFDerivation} from "./VRFDerivation.sol";
 ///   drand round; any Fulfiller EOA submits the drand signature and a VRF proof over
 ///   Alpha; anyone reads Beta and derived values afterwards.
 /// @dev Lives behind a UUPS (ERC-1967) proxy with ERC-7201 namespaced storage.
-///   Admin parameters are frozen per request. Key revocation comes in a later slice.
+///   Admin parameters are frozen per request. Revoking a key stops its fulfillment and
+///   makes its pending requests refundable at once.
 contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, ReentrancyGuard {
     bytes32 internal constant DOMAIN_ALPHA = keccak256("rsk-vrf/v1/alpha");
     bytes32 internal constant DOMAIN_VRF_BETA = keccak256("rsk-vrf/v1/beta");
@@ -23,6 +23,8 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     uint64 internal constant DEFAULT_ROUND_OFFSET = 40;
     uint48 internal constant DEFAULT_TIMEOUT_BLOCKS = 1200;
     uint16 internal constant DEFAULT_CONFIRMATIONS = 12;
+    /// @notice The longest Deadline a request can have; a Draining Key retires after it.
+    uint48 public constant MAX_TIMEOUT_BLOCKS = 2400;
 
     enum Status {
         None,
@@ -39,7 +41,10 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     enum KeyState {
         None,
         Active,
-        Draining
+        Draining,
+        Revoked,
+        /// @dev Never stored: derived in `getProvingKey` once a Draining Key outlives every Deadline.
+        Retired
     }
 
     /// @notice A request record; three storage slots.
@@ -61,6 +66,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         bytes32 keyHash;
         address payee;
         KeyState state;
+        uint48 drainingSince;
     }
 
     /// @notice A drand beacon. `publicKey` uses BLS.sol's G2 layout [x.re, x.im, y.re, y.im].
@@ -101,9 +107,6 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint96 fee,
         uint32 callbackGasCap
     );
-    event FeeConfigSet(uint96 amount);
-    event ConfirmationsSet(uint16 confirmations);
-    event TimeoutBlocksSet(uint48 timeoutBlocks);
     event Refunded(bytes32 indexed requestId, RefundReason reason);
     event FeesWithdrawn(address indexed payee, uint256 amount);
     event CallbackFailed(bytes32 indexed requestId);
@@ -135,10 +138,18 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     error NoActiveKey();
     error InvalidProvingKey();
     error KeyAlreadyRegistered();
+    error UnknownKey();
+    error InvalidKeyTransition();
+    error KeyRevoked();
     error ValueOutOfBounds(bytes32 param);
+
+    /// @notice Stateless drand BLS verifier this implementation deploys for itself.
+    /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
+    DrandEvmnetVerifier internal immutable DRAND_VERIFIER;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
+        DRAND_VERIFIER = new DrandEvmnetVerifier();
         _disableInitializers();
     }
 
@@ -183,7 +194,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     function _addDrandConfig(DrandConfig calldata drand) private returns (uint8 id) {
         CoordinatorStorage storage $ = _storage();
         if ($.drandConfigs.length >= 256) revert ValueOutOfBounds("drandConfigCount");
-        if (drand.period == 0 || !BLS.isValidPublicKey(drand.publicKey)) revert ValueOutOfBounds("drandConfig");
+        if (drand.period == 0 || !DRAND_VERIFIER.isValidPublicKey(drand.publicKey)) revert ValueOutOfBounds("drandConfig");
         id = uint8($.drandConfigs.length);
         $.drandConfigs.push(drand);
         emit DrandConfigAdded(id, drand.publicKey, drand.genesis, drand.period);
@@ -210,10 +221,9 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     }
 
     function setTimeoutBlocks(uint256 value) external onlyOwner {
-        if (value < 600 || value > 2400) revert ValueOutOfBounds("timeoutBlocks");
+        if (value < 600 || value > MAX_TIMEOUT_BLOCKS) revert ValueOutOfBounds("timeoutBlocks");
         _storage().timeoutBlocks = uint48(value);
         emit TimeoutBlocksChanged(uint48(value));
-        emit TimeoutBlocksSet(uint48(value));
     }
 
     function timeoutBlocks() external view returns (uint48) {
@@ -224,7 +234,6 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         if (value < 6 || value > 100) revert ValueOutOfBounds("confirmations");
         _storage().confirmations = uint16(value);
         emit ConfirmationsChanged(uint16(value));
-        emit ConfirmationsSet(uint16(value));
     }
 
     function confirmations() external view returns (uint16) {
@@ -235,7 +244,6 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         if (amount > type(uint96).max) revert ValueOutOfBounds("fee");
         _storage().fee = uint96(amount);
         emit FeeConfigChanged(uint96(amount));
-        emit FeeConfigSet(uint96(amount));
     }
 
     function fee() external view returns (uint96) {
@@ -259,10 +267,11 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         uint32 previous = $.activeKeyId;
         if (previous != 0) {
             $.keys[previous].state = KeyState.Draining;
+            $.keys[previous].drainingSince = uint48(block.number);
             emit KeyStateChanged(previous, KeyState.Draining);
         }
         keyId = ++$.keyCount;
-        $.keys[keyId] = ProvingKey({keyHash: keyHash, payee: payee, state: KeyState.Active});
+        $.keys[keyId] = ProvingKey({keyHash: keyHash, payee: payee, state: KeyState.Active, drainingSince: 0});
         $.keyIds[keyHash] = keyId;
         $.activeKeyId = keyId;
         emit KeyRegistered(keyId, keyHash, payee);
@@ -270,6 +279,29 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     }
 
     // -------------------------------------------------------------- lifecycle
+
+    /// @notice Revokes an Active or Draining key immediately. Its pending requests can no
+    ///   longer be fulfilled and are refundable at once. Revoking the Active Key leaves
+    ///   no Active Key, so new requests stop until another key is registered.
+    function revoke(bytes32 keyHash) external onlyOwner {
+        CoordinatorStorage storage $ = _storage();
+        uint32 keyId = $.keyIds[keyHash];
+        if (keyId == 0) revert UnknownKey();
+        KeyState state = _provingKey(keyId).state;
+        // A registered key is never None, so only Revoked and Retired follow Draining.
+        if (state > KeyState.Draining) revert InvalidKeyTransition();
+        $.keys[keyId].state = KeyState.Revoked;
+        if ($.activeKeyId == keyId) $.activeKeyId = 0;
+        emit KeyStateChanged(keyId, KeyState.Revoked);
+    }
+
+    /// @dev The stored record with Retired derived for a Draining Key past every Deadline.
+    function _provingKey(uint32 keyId) private view returns (ProvingKey memory key) {
+        key = _storage().keys[keyId];
+        if (key.state == KeyState.Draining && block.number > uint256(key.drainingSince) + MAX_TIMEOUT_BLOCKS) {
+            key.state = KeyState.Retired;
+        }
+    }
 
     /// @notice Requests randomness bound to the Active Key and a future drand round.
     function request(bytes32 tag) external payable returns (bytes32 requestId) {
@@ -333,10 +365,13 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         if (status != Status.Pending) revert RequestNotPending(status);
         if (block.number < uint256(r.requestBlock) + r.confirmations) revert TooEarly();
         if (block.number > r.deadline) revert DeadlinePassed();
-        if (keccak256(abi.encode(proof.pk)) != $.keys[r.keyId].keyHash) revert WrongProvingKey();
+        ProvingKey storage key = $.keys[r.keyId];
+        // Raw stored state suffices: a Retired key is past every Deadline, checked above.
+        if (key.state == KeyState.Revoked) revert KeyRevoked();
+        if (keccak256(abi.encode(proof.pk)) != key.keyHash) revert WrongProvingKey();
 
         uint64 targetRound = r.targetRound;
-        if (!DrandEvmnet.verify($.drandConfigs[r.drandConfigId].publicKey, targetRound, drandSignature)) {
+        if (!DRAND_VERIFIER.verify($.drandConfigs[r.drandConfigId].publicKey, targetRound, drandSignature)) {
             revert InvalidDrandSignature();
         }
         bytes32 alpha = keccak256(
@@ -358,7 +393,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         }
         r.status = Status.Fulfilled;
         r.beta = beta;
-        $.payeeBalances[$.keys[r.keyId].payee] += r.fee;
+        $.payeeBalances[key.payee] += r.fee;
         emit Fulfilled(requestId, beta, msg.sender);
         if (r.callbackGasCap != 0) _deliverCallback(requestId, r.requester, beta, r.callbackGasCap);
     }
@@ -376,18 +411,24 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         if (!success) emit CallbackFailed(requestId);
     }
 
-    /// @notice Anyone may return a Pending request's Escrow after its hard Deadline.
+    /// @notice Anyone may return a Pending request's Escrow after its hard Deadline, or at
+    ///   once if its bound key is Revoked.
     /// @dev A failed push rolls back the status change, leaving the request Pending.
     function timeoutRefund(bytes32 requestId) external nonReentrant {
-        Request storage r = _storage().requests[requestId];
+        CoordinatorStorage storage $ = _storage();
+        Request storage r = $.requests[requestId];
         Status status = r.status;
         if (status == Status.None) revert UnknownRequest();
         if (status != Status.Pending) revert RequestNotPending(status);
-        if (block.number <= r.deadline) revert NotRefundableYet();
+        // Raw stored state suffices: a Retired key is past every Deadline, so it refunds
+        // on the Deadline branch like a Draining one.
+        RefundReason reason = RefundReason.Deadline;
+        if ($.keys[r.keyId].state == KeyState.Revoked) reason = RefundReason.KeyRevoked;
+        else if (block.number <= r.deadline) revert NotRefundableYet();
         r.status = Status.Refunded;
         (bool sent,) = r.requester.call{value: r.fee}("");
         if (!sent) revert RefundTransferFailed();
-        emit Refunded(requestId, RefundReason.Deadline);
+        emit Refunded(requestId, reason);
     }
 
     /// @notice Withdraws only the caller's credited fees; no-op for an empty balance.
@@ -427,8 +468,9 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         return VRFDerivation.randomInRange(_fulfilledBeta(requestId), context, min, max);
     }
 
+    /// @notice The key's record, with Retired derived for a Draining Key past every Deadline.
     function getProvingKey(uint32 keyId) external view returns (ProvingKey memory) {
-        return _storage().keys[keyId];
+        return _provingKey(keyId);
     }
 
     function activeKeyId() external view returns (uint32) {

@@ -1,7 +1,7 @@
 import { createPublicClient, decodeFunctionData, encodeFunctionData, http, parseAbiItem, type AbiEvent, type Address, type Chain, type Hex } from 'viem';
 import { sendRawTransaction } from 'viem/actions';
 import { privateKeyToAccount } from 'viem/accounts';
-import { composeFulfillment, coordinatorAbi } from './coordinator.ts';
+import { composeFulfillment, coordinatorAbi, KeyState, servesKey } from './coordinator.ts';
 import type { ProvingKey } from './proving-key.ts';
 
 /** Local copy of a drand beacon. Chain config is used only after it matches this pin. */
@@ -16,7 +16,9 @@ export interface WorkerConfig {
   coordinator: Address;
   chain: Chain;
   fulfillerPrivateKey: Hex;
-  provingKey: ProvingKey;
+  /** Loads the Proving Key for a registered keyHash from the secret store. Resolves
+   * undefined if the store does not hold it; rejects on any other failure. */
+  loadProvingKey: (keyHash: Hex) => Promise<ProvingKey | undefined>;
   /** Required. Public key, genesis, and period pinned for this process. */
   drandPin: DrandPin;
   /** One relay. Ignored when `relayUrls` is non-empty. */
@@ -30,6 +32,8 @@ export interface WorkerConfig {
   /** Operator line. Defaults to stderr. Must not receive key material. */
   report?: (line: string) => void;
 }
+/** One Active or Draining key after syncKeys. `error` is the load failure's message; it never carries a secret. */
+export type KeySync = { keyId: number; keyHash: Hex; held: boolean; error?: string };
 export type PollResult = { requestId: Hex; status: 'waiting' | 'skipped' | 'retry' | 'submitted' | 'stalled'; transactionHash?: Hex };
 
 /** Every relay failed to serve this round. Distinct from a failed simulation. */
@@ -52,7 +56,6 @@ const BACKFILL_BLOCKS = 2_400n + 100n;
 const MAX_LOG_SPAN = 5_000n;
 const OUTCOME_DEPTH = 12n;
 const REQUEST_STATUS = { NONE: 0, PENDING: 1, FULFILLED: 2, REFUNDED: 3 } as const;
-const KEY_STATE = { NONE: 0 } as const;
 // One-try verification headroom plus the callback's post-call reserve.
 const VERIFICATION_AND_RESERVE_GAS = 652_000n;
 const ADDITIONAL_HASH_TO_CURVE_GAS = 20_000n; // Spec measurement is about 15k.
@@ -67,6 +70,7 @@ const RESERVE_FULFILLS = 20n;
 const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
 const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)');
 const refundedEvent = parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)');
+const keyStateChangedEvent = parseAbiItem('event KeyStateChanged(uint32 keyId, uint8 state)');
 
 type OutcomeLog = { blockNumber: bigint | null; args: { requestId: Hex } };
 type Inflight = {
@@ -90,6 +94,7 @@ type Fulfillable = {
   drandConfigId: number;
   roundTime: bigint;
   callbackGasCap: number;
+  provingKey: ProvingKey;
 };
 
 function isLogCapError(error: unknown): boolean {
@@ -147,6 +152,57 @@ export function createWorker(config: WorkerConfig) {
   const relays = (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls : config.relayUrl ? [config.relayUrl] : []).map(url => url.replace(/\/$/, ''));
   const reportedPin = new Set<number>();
   const stalled = new Set<Hex>();
+  // Every Active or Draining key may still have Fulfillable requests, so each is held.
+  const keys = new Map<string, Promise<ProvingKey | undefined>>();
+  const keyFor = (keyHash: Hex) => {
+    const id = keyHash.toLowerCase();
+    let key = keys.get(id);
+    if (!key) {
+      // A failed load is forgotten so the next use retries; its error propagates unchanged.
+      key = config.loadProvingKey(keyHash).then(
+        loaded => (loaded && loaded.keyHash.toLowerCase() === id ? loaded : undefined),
+        (error: unknown) => {
+          keys.delete(id);
+          throw error;
+        },
+      );
+      keys.set(id, key);
+    }
+    return key;
+  };
+  const held = new Set<string>();
+  const evict = (keyHash: Hex) => {
+    keys.delete(keyHash.toLowerCase());
+    held.delete(keyHash.toLowerCase());
+  };
+  const readKey = (keyId: number) =>
+    publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [keyId], blockTag: 'latest' });
+  let synced = false;
+  // KeyStateChanged logs seen in the backfill window. A new or reorged-out log forces a resync.
+  let keyChanges = '';
+  /** Loads every Active and Draining key and evicts the rest. Key ids run 1..n with no gaps. */
+  async function syncKeys(): Promise<KeySync[]> {
+    const sync: KeySync[] = [];
+    for (let keyId = 1; ; keyId++) {
+      const [keyHash, , state] = await readKey(keyId);
+      if (state === KeyState.None) break;
+      if (!servesKey(state)) {
+        evict(keyHash);
+        continue;
+      }
+      try {
+        const loaded = await keyFor(keyHash);
+        if (loaded) held.add(keyHash.toLowerCase());
+        else evict(keyHash);
+        sync.push({ keyId, keyHash, held: loaded !== undefined });
+      } catch (error) {
+        held.delete(keyHash.toLowerCase());
+        sync.push({ keyId, keyHash, held: false, error: error instanceof Error ? error.message : 'Proving Key load failed' });
+      }
+    }
+    synced = true;
+    return sync;
+  }
 
   function pinMatches(beacon: { publicKey: readonly bigint[]; genesis: bigint; period: bigint }): boolean {
     if (beacon.genesis !== config.drandPin.genesis || beacon.period !== config.drandPin.period) return false;
@@ -444,6 +500,9 @@ export function createWorker(config: WorkerConfig) {
   }
 
   return {
+    syncKeys,
+    /** The keyHashes of the Proving Keys currently held in memory. */
+    heldKeys: () => [...held] as Hex[],
     async pollOnce(): Promise<PollResult[]> {
       const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
       const quoted = startPrice(await publicClient.getGasPrice(), await blockMinimum());
@@ -456,6 +515,11 @@ export function createWorker(config: WorkerConfig) {
         logsFor(fulfilledEvent, fromBlock, latest),
         logsFor(refundedEvent, fromBlock, latest),
       ]);
+      const changes = await publicClient.getLogs({ address: config.coordinator, event: keyStateChangedEvent, fromBlock, toBlock: latest });
+      const changeIds = changes.map(log => `${log.blockHash}:${log.logIndex}`).join(',');
+      if (changeIds !== keyChanges) synced = false;
+      keyChanges = changeIds;
+      if (!synced) await syncKeys();
       const requestInWindow = new Set<Hex>();
       for (const log of requestedLogs) {
         if (log.blockNumber == null) continue;
@@ -524,7 +588,11 @@ export function createWorker(config: WorkerConfig) {
             continue;
           }
           const [keyHash, , keyState] = await publicClient.readContract({ address: config.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [request.keyId], blockTag: 'latest' });
-          if (keyState === KEY_STATE.NONE || keyHash.toLowerCase() !== config.provingKey.keyHash.toLowerCase()) {
+          // Checked per request too: Retired is derived from block height and emits no event.
+          if (!servesKey(keyState)) evict(keyHash);
+          const provingKey = servesKey(keyState) ? await keyFor(keyHash) : undefined;
+          if (provingKey) held.add(keyHash.toLowerCase());
+          if (!provingKey) {
             results.push({ requestId, status: 'skipped' });
             continue;
           }
@@ -552,7 +620,7 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime, callbackGasCap: request.callbackGasCap });
+          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime, callbackGasCap: request.callbackGasCap, provingKey });
         } catch (error) {
           if (error instanceof NonceSyncError) throw error;
           results.push({ requestId, status: 'retry' });
@@ -590,7 +658,7 @@ export function createWorker(config: WorkerConfig) {
             continue;
           }
           stalled.delete(item.requestId);
-          const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: item.requester, requestId: item.requestId, targetRound: item.targetRound, signature }, config.provingKey);
+          const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: item.requester, requestId: item.requestId, targetRound: item.targetRound, signature }, item.provingKey);
           // Preserve the full frozen cap even when simulation sees a cheap path.
           const gas = VERIFICATION_AND_RESERVE_GAS + ADDITIONAL_HASH_TO_CURVE_GAS * BigInt(composed.hashToCurveTries - 1) + BigInt(item.callbackGasCap);
           if (effective < RESERVE_FULFILLS * gas * quoted.price) {

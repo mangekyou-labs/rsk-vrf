@@ -4,12 +4,14 @@ import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { describe, it } from 'node:test';
-import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
+import { createPublicClient, createWalletClient, decodeFunctionData, defineChain, encodeFunctionData, http, parseAbi, parseAbiItem, parseEventLogs, type Abi, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { coordinatorAbi } from '../src/coordinator.ts';
+import { coordinatorAbi as workerAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
 import { createWorker, type DrandPin, type PollResult } from '../src/worker.ts';
 
+// The worker never revokes; only the tests act as the Admin here.
+const coordinatorAbi = [...workerAbi, ...parseAbi(['function revoke(bytes32 keyHash)'])];
 const rpcUrl = process.env.RSK_RPC_URL ?? 'http://127.0.0.1:4449';
 const chain = defineChain({ id: 33, name: 'Rootstock regtest', nativeCurrency: { name: 'Test RBTC', symbol: 'tRBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
 const client = createPublicClient({ chain, transport: http(rpcUrl), pollingInterval: 50, cacheTime: 0 });
@@ -157,7 +159,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let invalidSignature = true;
       await mineBlocks(confirmations);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -181,7 +183,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const again = await worker.pollOnce();
       assert.equal(forRequest(again, requestId)?.status, 'waiting');
       assert.equal(await nonceOf(fulfiller.address), inflightNonce, 'a second poll does not send another fulfillment');
-      const restartedSameFulfiller = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now });
+      const restartedSameFulfiller = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now });
       assert.equal(forRequest(await restartedSameFulfiller.pollOnce(), requestId)?.status, 'waiting');
       assert.equal(await nonceOf(fulfiller.address), before + 1, 'restart does not duplicate an unmined fulfill');
       const fulfilledReceipt = await receipt(submitted[0]!.transactionHash!);
@@ -218,7 +220,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let relayCalls = 0;
       const before = await nonceOf(fulfiller.address);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon),
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         fetch: async (input, init) => { relayCalls++; return fetch(input, init); },
       });
@@ -244,12 +246,12 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const confirmations = Number(record.confirmations);
       const roundTime = beacon.genesis + (record.targetRound - 1n) * beacon.period;
       await mineBlocks(confirmations);
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const submitted = await worker.pollOnce();
       assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
       await receipt(forRequest(submitted, requestId)!.transactionHash!);
       const before = await nonceOf(backup.address);
-      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
+      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const seen = await restarted.pollOnce();
       assert.equal(forRequest(seen, requestId)?.status, 'waiting');
       assert.equal(seen.some(item => item.status === 'submitted'), false);
@@ -271,7 +273,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
     let fetched = 0;
     const before = await nonceOf(fulfiller.address);
     const worker = createWorker({
-      rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+      rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
       relayUrls: ['http://127.0.0.1:1', 'http://127.0.0.1:1', 'http://127.0.0.1:1'],
       drandPin: { ...pinOf(beacon), period: beacon.period + 1n },
       nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
@@ -307,7 +309,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const { requestId, record } = await requestRandomness(coordinator, `0x${'22'.repeat(32)}`);
         await mineBlocks(Number(record.confirmations));
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon),
           nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         });
@@ -349,7 +351,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const { requestId, record } = await requestRandomness(coordinator, `0x${'33'.repeat(32)}`);
         await mineBlocks(Number(record.confirmations));
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon),
           nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         });
@@ -403,7 +405,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const lines: string[] = [];
         const before = await nonceOf(fulfiller.address);
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon), nowSeconds: () => now,
           report: line => lines.push(line),
         });
@@ -478,7 +480,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const quote = await quotedStart();
       assert.equal(quote.cap, quote.minimum > 0n ? 80n * quote.minimum - 1n : null);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
         relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
       });
       const results = await worker.pollOnce();
@@ -565,7 +567,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const now = firstRound > secondRound ? firstRound : secondRound;
       const bucket = { n: 0 };
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: poorKey, provingKey: key,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: poorKey, loadProvingKey: keyStore(key),
         relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
       });
       const before = await nonceOf(poor.address);
@@ -662,7 +664,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.equal(record.confirmations, 12);
       const bucket = { n: 0 };
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, provingKey: key, relayUrl,
+        rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, loadProvingKey: keyStore(key), relayUrl,
         drandPin: pinOf(beacon), graceBlocks: 100, fetch: countingFetch(bucket),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
       });
@@ -710,7 +712,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const primaryHits = { n: 0 };
       const backupHits = { n: 0 };
       const shared = {
-        rpcUrl, coordinator, chain, provingKey: key, relayUrl, drandPin: pinOf(beacon),
+        rpcUrl, coordinator, chain, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
       };
       const primaryWorker = createWorker({ ...shared, fulfillerPrivateKey: primaryKey, graceBlocks: 0, fetch: countingFetch(primaryHits) });
@@ -799,7 +801,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let now = roundTime - 1n;
       let relayCalls = 0;
       let invalidSignature = true;
-      let worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
+      let worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -898,7 +900,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       now = nextBeacon.genesis + (pendingRecord.targetRound - 1n) * nextBeacon.period;
       for (let n = 0; n < pendingRecord.confirmations; n++) await mine();
       // The upgraded coordinator's new beacon requires an explicit new local pin.
-      worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, provingKey: key, relayUrl, drandPin: pinOf(nextBeacon), nowSeconds: () => now });
+      worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(nextBeacon), nowSeconds: () => now });
       const afterUpgrade = await worker.pollOnce();
       assert.equal(afterUpgrade[0]?.status, 'submitted', 'pre-upgrade Pending request remains Fulfillable');
       await receipt(afterUpgrade[0]!.transactionHash!);
@@ -951,5 +953,155 @@ describe('worker regtest', { concurrency: 1 }, () => {
       relay.kill('SIGTERM');
       if (relay.exitCode === null) await once(relay, 'exit');
     }
+  });
+});
+
+async function startRelay(port: number) {
+  const relay = spawn(process.env.TEST_RELAY_BIN ?? '/tmp/rsk-vrf-test-relay', ['-test-relay', `127.0.0.1:${port}`], { stdio: ['ignore', 'ignore', 'pipe'] });
+  let relayError = ''; relay.stderr.on('data', chunk => { relayError += String(chunk); });
+  const url = `http://127.0.0.1:${port}`;
+  const stop = async () => { relay.kill('SIGTERM'); if (relay.exitCode === null) await once(relay, 'exit'); };
+  for (let n = 0; n < 100; n++) {
+    try { if ((await fetch(`${url}/public/1`)).ok) return { url, stop }; } catch { /* startup only */ }
+    if (relay.exitCode !== null) throw new Error(`Test relay exited: ${relayError}`);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  await stop();
+  throw new Error('Test relay did not start');
+}
+
+/** A funded coordinator with no Proving Key registered. */
+async function deployUnkeyed() {
+  assert.equal(await client.getChainId(), 33, 'must use real rskj regtest');
+  await fund([requester, fulfiller]);
+  const implementation = artifact('VRFCoordinator');
+  const deployed = await receipt(await wallet.deployContract({ abi: implementation.abi, bytecode: implementation.bytecode.object, gas: 6_500_000n, gasPrice: 1n }));
+  const beacon = { publicKey: (fixture.drand.publicKey as string[]).map(BigInt), genesis: BigInt(fixture.drand.genesis), period: BigInt(fixture.drand.period) };
+  const init = encodeFunctionData({ abi: implementation.abi, functionName: 'initialize', args: [owner.address, beacon] });
+  const proxy = artifact('ERC1967Proxy');
+  const proxyReceipt = await receipt(await wallet.deployContract({ abi: proxy.abi, bytecode: proxy.bytecode.object, args: [deployed.contractAddress!, init], gas: 2_000_000n, gasPrice: 1n }));
+  return { coordinator: proxyReceipt.contractAddress!, beacon };
+}
+
+/** An in-memory secret store standing in for AWS Secrets Manager. */
+function keyStore(...keys: ProvingKey[]) {
+  return async (keyHash: Hex) => keys.find(k => k.keyHash.toLowerCase() === keyHash.toLowerCase());
+}
+
+const requesterWallet = createWalletClient({ account: requester, chain, transport: http(rpcUrl) });
+async function makeRequest(coordinator: Hex, tag: string) {
+  const made = await receipt(await requesterWallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'request', args: [`0x${tag.repeat(32)}`], value: 2n * 10n ** 13n, gas: 500_000n, gasPrice: 1n }));
+  const id = parseEventLogs({ abi: coordinatorAbi, eventName: 'RandomnessRequested', logs: made.logs })[0]!.args.requestId;
+  return { id, record: await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [id] }) };
+}
+const register = async (coordinator: Hex, key: ProvingKey) => receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'registerProvingKey', args: [key.publicKey, owner.address], gas: 500_000n, gasPrice: 1n }));
+
+describe('worker regtest: key rotation and revocation', { concurrency: 1 }, () => {
+  it('real rskj: after rotation the worker fulfills the pending request with the old key and the new request with the new key', { timeout: 180_000 }, async () => {
+    const relay = await startRelay(18770);
+    try {
+      const { coordinator, beacon } = await deployUnkeyed();
+      const oldKey = ProvingKey.generate();
+      const newKey = ProvingKey.generate();
+      await register(coordinator, oldKey);
+      let now = 0n;
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(oldKey, newKey), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now });
+
+      const before = await makeRequest(coordinator, 'a1');
+      assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
+      await register(coordinator, newKey);
+      assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [1] }))[2], 2, 'old key is Draining');
+      const after = await makeRequest(coordinator, 'a2');
+      assert.equal(before.record.keyId, 1);
+      assert.equal(after.record.keyId, 2);
+
+      now = beacon.genesis + (after.record.targetRound - 1n) * beacon.period;
+      for (let n = 0; n < 12; n++) await mine();
+      const results = await worker.pollOnce();
+      assert.deepEqual(results.map(x => x.status), ['submitted', 'submitted']);
+      for (const r of results) await receipt(r.transactionHash!);
+      for (const { id } of [before, after]) {
+        assert.equal((await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getRequest', args: [id] })).status, 2, 'Fulfilled');
+      }
+    } finally {
+      await relay.stop();
+    }
+  });
+
+  it('real rskj: revocation stops the worker and the pending request is refunded before its Deadline', { timeout: 180_000 }, async () => {
+    const relay = await startRelay(18771);
+    try {
+      const { coordinator, beacon } = await deployUnkeyed();
+      const key = ProvingKey.generate();
+      await register(coordinator, key);
+      const { id, record } = await makeRequest(coordinator, 'b1');
+      let relayCalls = 0;
+      let now = 0n;
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now,
+        fetch: async (input, init) => { relayCalls++; return fetch(input, init); } });
+      assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
+
+      await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'revoke', args: [key.keyHash], gas: 200_000n, gasPrice: 1n }));
+      now = beacon.genesis + (record.targetRound - 1n) * beacon.period;
+      for (let n = 0; n < 12; n++) await mine();
+      const nonce = await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' });
+      assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['skipped'], 'never proves for a Revoked key');
+      assert.equal(relayCalls, 0);
+      assert.equal(await client.getTransactionCount({ address: fulfiller.address, blockTag: 'pending' }), nonce, 'no fulfill is sent');
+
+      assert.ok(await client.getBlockNumber({ cacheTime: 0 }) < BigInt(record.deadline), 'still before the Deadline');
+      const balance = await client.getBalance({ address: requester.address });
+      const refunded = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'timeoutRefund', args: [id], gas: 300_000n, gasPrice: 1n }));
+      assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refunded.logs })[0]!.args.reason, 1, 'KeyRevoked reason');
+      assert.equal(await client.getBalance({ address: requester.address }), balance + record.fee);
+      assert.equal(forRequest(await worker.pollOnce(), id)?.status, 'waiting', 'a Refunded outcome is kept until 12 blocks deep');
+      await mineBlocks(12);
+      assert.equal(forRequest(await worker.pollOnce(), id), undefined);
+    } finally {
+      await relay.stop();
+    }
+  });
+
+  it('real rskj: the worker holds every Active and Draining key and follows KeyStateChanged', { timeout: 180_000 }, async () => {
+    const { coordinator, beacon } = await deployUnkeyed();
+    const [first, second, third] = [ProvingKey.generate(), ProvingKey.generate(), ProvingKey.generate()];
+    await register(coordinator, first);
+    await register(coordinator, second);
+    const loads: Hex[] = [];
+    const store = keyStore(first, second, third);
+    const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
+      loadProvingKey: async (keyHash) => {
+        loads.push(keyHash);
+        return store(keyHash);
+      } });
+    const held = (...keys: ProvingKey[]) => keys.map(k => k.keyHash).sort();
+
+    const startup = await worker.syncKeys();
+    assert.deepEqual(startup.map(k => [k.keyId, k.held]), [[1, true], [2, true]], 'Draining and Active keys load before any request');
+    assert.deepEqual(worker.heldKeys().sort(), held(first, second));
+
+    await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'revoke', args: [first.keyHash], gas: 200_000n, gasPrice: 1n }));
+    await worker.pollOnce();
+    assert.deepEqual(worker.heldKeys(), held(second), 'a Revoked key is evicted');
+
+    await register(coordinator, third);
+    await worker.pollOnce();
+    assert.deepEqual(worker.heldKeys().sort(), held(second, third), 'a newly Active key loads on KeyStateChanged');
+    assert.equal(loads.length, 3, 'held keys are not reloaded');
+  });
+
+  it('real rskj: a key the secret store lacks is reported as not held, and a load failure keeps its message', { timeout: 180_000 }, async () => {
+    const { coordinator, beacon } = await deployUnkeyed();
+    const [missing, failing] = [ProvingKey.generate(), ProvingKey.generate()];
+    await register(coordinator, missing);
+    await register(coordinator, failing);
+    const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
+      loadProvingKey: async (keyHash) => {
+        if (keyHash.toLowerCase() === failing.keyHash) throw new Error('AccessDeniedException');
+        return undefined;
+      } });
+    const synced = await worker.syncKeys();
+    assert.deepEqual(synced.map(k => [k.keyId, k.held, k.error]), [[1, false, undefined], [2, false, 'AccessDeniedException']]);
+    assert.deepEqual(worker.heldKeys(), []);
   });
 });

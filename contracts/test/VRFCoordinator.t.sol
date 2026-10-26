@@ -528,13 +528,13 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         VRFCoordinator.Request memory original = coordinator.getRequest(v.requestId);
         vm.startPrank(owner);
         vm.expectEmit(address(coordinator));
-        emit VRFCoordinator.FeeConfigSet(0);
+        emit VRFCoordinator.FeeConfigChanged(0);
         coordinator.setFeeConfig(0);
         vm.expectEmit(address(coordinator));
-        emit VRFCoordinator.ConfirmationsSet(100);
+        emit VRFCoordinator.ConfirmationsChanged(100);
         coordinator.setConfirmations(100);
         vm.expectEmit(address(coordinator));
-        emit VRFCoordinator.TimeoutBlocksSet(2400);
+        emit VRFCoordinator.TimeoutBlocksChanged(2400);
         coordinator.setTimeoutBlocks(2400);
         vm.stopPrank();
         assertEq(coordinator.fee(), 0);
@@ -612,6 +612,131 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         assertEq(coordinator.activeKeyId(), 2);
         assertEq(uint8(coordinator.getProvingKey(1).state), uint8(VRFCoordinator.KeyState.Draining));
         assertEq(uint8(coordinator.getProvingKey(2).state), uint8(VRFCoordinator.KeyState.Active));
+    }
+
+    // ---------------------------------------------------- rotation/revocation
+
+    // Any other point on the curve: the secp256k1 generator.
+    function otherKey() internal pure returns (uint256[2] memory) {
+        return [
+            0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+            0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+        ];
+    }
+
+    function keyState(uint32 keyId) internal view returns (uint8) {
+        return uint8(coordinator.getProvingKey(keyId).state);
+    }
+
+    function test_RevokeStopsFulfillAndMakesPendingRequestsRefundableAtOnce() public {
+        requestAll();
+        RequestVector memory v = vector(0);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.KeyStateChanged(1, VRFCoordinator.KeyState.Revoked);
+        vm.prank(owner);
+        coordinator.revoke(keccak256(abi.encode(v.proof.pk)));
+        assertEq(keyState(1), uint8(VRFCoordinator.KeyState.Revoked));
+        assertEq(coordinator.activeKeyId(), 0, "revoking the Active Key is the emergency stop");
+
+        vm.expectRevert(VRFCoordinator.KeyRevoked.selector);
+        fulfillAs(fulfiller, v);
+
+        VRFCoordinator.Request memory r = coordinator.getRequest(v.requestId);
+        assertLe(block.number, r.deadline, "refund happens before the Deadline");
+        uint256 before = v.requester.balance;
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.Refunded(v.requestId, VRFCoordinator.RefundReason.KeyRevoked);
+        coordinator.timeoutRefund(v.requestId);
+        assertEq(v.requester.balance, before + 2e13);
+
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(VRFCoordinator.NoActiveKey.selector);
+        coordinator.request{value: 2e13}(bytes32(0));
+    }
+
+    function test_RequestBeforeRotationIsFulfilledWithOldKeyAndAfterIsBoundToNew() public {
+        registerGoldenKey();
+        RequestVector memory v0 = vector(0);
+        RequestVector memory v1 = vector(1);
+        requestAs(v0);
+        vm.prank(owner);
+        coordinator.registerProvingKey(otherKey(), payee);
+        requestAs(v1);
+        vm.roll(block.number + 12);
+
+        assertEq(coordinator.getRequest(v0.requestId).keyId, 1);
+        assertEq(coordinator.getRequest(v1.requestId).keyId, 2);
+        fulfillAs(fulfiller, v0);
+        assertEq(uint8(coordinator.getRequest(v0.requestId).status), uint8(VRFCoordinator.Status.Fulfilled));
+        // The old key never serves a request bound to the new one.
+        vm.expectRevert(VRFCoordinator.WrongProvingKey.selector);
+        fulfillAs(fulfiller, v1);
+    }
+
+    function test_DrainingKeyRetiresAfterTheLongestPossibleDeadline() public {
+        registerGoldenKey();
+        vm.prank(owner);
+        coordinator.registerProvingKey(otherKey(), payee);
+        uint256 since = block.number;
+        vm.roll(since + coordinator.MAX_TIMEOUT_BLOCKS());
+        assertEq(keyState(1), uint8(VRFCoordinator.KeyState.Draining));
+        vm.roll(since + coordinator.MAX_TIMEOUT_BLOCKS() + 1);
+        assertEq(keyState(1), uint8(VRFCoordinator.KeyState.Retired));
+        assertEq(keyState(2), uint8(VRFCoordinator.KeyState.Active));
+    }
+
+    function test_DrainingKeyCanBeRevoked() public {
+        registerGoldenKey();
+        vm.startPrank(owner);
+        coordinator.registerProvingKey(otherKey(), payee);
+        vm.expectEmit(address(coordinator));
+        emit VRFCoordinator.KeyStateChanged(1, VRFCoordinator.KeyState.Revoked);
+        coordinator.revoke(keccak256(abi.encode(vector(0).proof.pk)));
+        vm.stopPrank();
+        assertEq(keyState(1), uint8(VRFCoordinator.KeyState.Revoked));
+        assertEq(coordinator.activeKeyId(), 2, "revoking a Draining Key leaves the Active Key");
+    }
+
+    function test_RevokeRejectsUnknownKeysAndInvalidTransitions() public {
+        bytes32 golden = keccak256(abi.encode(vector(0).proof.pk));
+        vm.startPrank(owner);
+        vm.expectRevert(VRFCoordinator.UnknownKey.selector);
+        coordinator.revoke(golden);
+        coordinator.registerProvingKey(vector(0).proof.pk, payee);
+        coordinator.revoke(golden);
+        vm.expectRevert(VRFCoordinator.InvalidKeyTransition.selector);
+        coordinator.revoke(golden);
+        // A revoked key is never reused.
+        vm.expectRevert(VRFCoordinator.KeyAlreadyRegistered.selector);
+        coordinator.registerProvingKey(vector(0).proof.pk, payee);
+
+        coordinator.registerProvingKey(otherKey(), payee);
+        // 2G, a third point on the curve.
+        uint256[2] memory third = [
+            0xC6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5,
+            0x1AE168FEA63DC339A3C58419466CEAEEF7F632653266D0E1236431A950CFE52A
+        ];
+        coordinator.registerProvingKey(third, payee);
+        vm.roll(block.number + coordinator.MAX_TIMEOUT_BLOCKS() + 1);
+        assertEq(keyState(2), uint8(VRFCoordinator.KeyState.Retired));
+        vm.expectRevert(VRFCoordinator.InvalidKeyTransition.selector);
+        coordinator.revoke(keccak256(abi.encode(otherKey())));
+        vm.stopPrank();
+    }
+
+    function test_OnlyOwnerRevokes() public {
+        registerGoldenKey();
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", stranger));
+        coordinator.revoke(keccak256(abi.encode(vector(0).proof.pk)));
+    }
+
+    function test_PayeeIsFixedAtRegistration() public {
+        registerGoldenKey();
+        VRFCoordinator.ProvingKey memory k = coordinator.getProvingKey(1);
+        assertEq(k.payee, payee);
+        assertEq(k.keyHash, keccak256(abi.encode(vector(0).proof.pk)));
     }
 
     function test_RegisterProvingKeyRejectsDuplicatesAndOffCurvePoints() public {

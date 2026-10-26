@@ -2,7 +2,6 @@
 // Polling worker. Each poll backfills from the chain; proving keys load from Secrets Manager.
 import { setTimeout } from 'node:timers/promises';
 import { createPublicClient, defineChain, getAddress, http, type Hex } from 'viem';
-import { coordinatorAbi } from './coordinator.ts';
 import { ProvingKey } from './proving-key.ts';
 import { AwsSecretSource, secretName } from './secrets.ts';
 import { parseKeyHash } from './types.ts';
@@ -52,24 +51,31 @@ async function main() {
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  // An explicit hash also permits serving a Draining Key after rotation.
-  let keyHash = parseKeyHash(process.env.PROVING_KEY_HASH ?? '');
-  if (process.env.PROVING_KEY_HASH !== undefined && !keyHash) throw new Error('Invalid key hash');
-  if (!keyHash) {
-    const keyId = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'activeKeyId' });
-    const [registered] = await client.readContract({ address: coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [keyId] });
-    keyHash = parseKeyHash(registered);
-  }
-  if (!keyHash) throw new Error('Invalid key hash');
-  const provingKey = ProvingKey.fromHex(await new AwsSecretSource().load(secretName(keyHash)));
-  if (provingKey.keyHash !== keyHash) throw new Error('Proving Key mismatch');
+  // Every Active and Draining key loads at startup and again on KeyStateChanged,
+  // so a Draining key keeps serving after rotation.
+  const secrets = new AwsSecretSource();
+  const loadProvingKey = async (keyHash: Hex) => {
+    const parsed = parseKeyHash(keyHash);
+    if (!parsed) throw new Error('Invalid key hash');
+    let secret: string;
+    try {
+      secret = await secrets.load(secretName(parsed));
+    } catch (error) {
+      // A key this deployment does not hold is not an error.
+      if (error instanceof Error && error.name === 'ResourceNotFoundException') return undefined;
+      throw error;
+    }
+    return ProvingKey.fromHex(secret);
+  };
   const worker = createWorker({
-    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, provingKey, drandPin: pin, graceBlocks: grace,
+    rpcUrl, relayUrls: relays, coordinator, chain, fulfillerPrivateKey, loadProvingKey, drandPin: pin, graceBlocks: grace,
     report: line => process.stderr.write(`${line}\n`),
   });
   const stop = new AbortController();
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
+  // KeySync carries only keyIds, keyHashes and load-error messages, which never quote a secret.
+  for (const key of await worker.syncKeys()) process.stdout.write(`${JSON.stringify(key)}\n`);
   process.stdout.write(`worker: polling ${coordinator}\n`);
   while (!stop.signal.aborted) {
     try {
