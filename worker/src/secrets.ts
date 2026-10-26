@@ -1,5 +1,7 @@
-// Where Proving Keys are stored: AWS Secrets Manager, one secret per key.
-import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+// Proving Keys in AWS Secrets Manager: one secret per key, named by keyHash,
+// holding the key as hex. provingKeyLoader reads and parses one, and tells a key
+// this deployment does not hold apart from a secret left without a value.
+import { DescribeSecretCommand, GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 
 import { ProvingKey } from './proving-key.ts';
 import { parseKeyHash, type Hex, type KeyHash } from './types.ts';
@@ -16,8 +18,13 @@ export function secretName(keyHash: KeyHash): string {
 
 /** SecretsManagerSender is the part of SecretsManagerClient this module uses. */
 export interface SecretsManagerSender {
-  send(command: GetSecretValueCommand): Promise<{ SecretString?: string }>;
+  send(command: GetSecretValueCommand | DescribeSecretCommand): Promise<{ SecretString?: string }>;
 }
+
+/** The error for a secret that exists with no value, such as one Terraform created and nobody filled. */
+export const EMPTY_SECRET_MESSAGE = 'Proving Key secret exists but has no value';
+
+const isNotFound = (error: unknown) => error instanceof Error && error.name === 'ResourceNotFoundException';
 
 /** AwsSecretSource reads SecretString from Secrets Manager. */
 export class AwsSecretSource implements SecretSource {
@@ -28,9 +35,26 @@ export class AwsSecretSource implements SecretSource {
   }
 
   async load(name: string): Promise<string> {
-    const out = await this.#client.send(new GetSecretValueCommand({ SecretId: name }));
+    let out: { SecretString?: string };
+    try {
+      out = await this.#client.send(new GetSecretValueCommand({ SecretId: name }));
+    } catch (error) {
+      // GetSecretValue says ResourceNotFound both for no secret and for a secret with no value.
+      if (isNotFound(error) && await this.#exists(name)) throw new Error(EMPTY_SECRET_MESSAGE);
+      throw error;
+    }
     if (out.SecretString === undefined) throw new Error(`secret ${name} has no SecretString`);
     return out.SecretString;
+  }
+
+  async #exists(name: string): Promise<boolean> {
+    try {
+      await this.#client.send(new DescribeSecretCommand({ SecretId: name }));
+      return true;
+    } catch (error) {
+      if (isNotFound(error)) return false;
+      throw error;
+    }
   }
 }
 
@@ -47,7 +71,7 @@ export function provingKeyLoader(source: SecretSource): (keyHash: Hex) => Promis
     try {
       secret = await source.load(secretName(parsed));
     } catch (error) {
-      if (error instanceof Error && error.name === 'ResourceNotFoundException') return undefined;
+      if (isNotFound(error)) return undefined;
       throw error;
     }
     return ProvingKey.fromHex(secret);

@@ -25,3 +25,8 @@ output "parameter_path" {
 output "log_group_arn" {
   value = aws_cloudwatch_log_group.host.arn
 }
+
+output "operator_parameter_arns" {
+  description = "Parameters the operator role sets out of band."
+  value       = [for n in local.operator_parameters : "arn:${local.partition}:ssm:${local.region}:${local.account}:parameter${local.parameter_path}/${n}"]
+}

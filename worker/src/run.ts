@@ -3,18 +3,31 @@
 import { KMSClient } from '@aws-sdk/client-kms';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { createPublicClient, defineChain, getAddress, http, type Hex } from 'viem';
-import type { LocalAccount } from 'viem/accounts';
+import { privateKeyToAccount, type LocalAccount } from 'viem/accounts';
 import { kmsAccount } from './kms-signer.ts';
-import { applyParameters, loadParameters } from './parameters.ts';
-import { AwsSecretSource, provingKeyLoader } from './secrets.ts';
+import { applyParameters, isPlaceholder, loadParameters } from './parameters.ts';
+import { AwsSecretSource, EMPTY_SECRET_MESSAGE, provingKeyLoader } from './secrets.ts';
 import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
 import { runWorkerLoop } from './loop.ts';
 import { jsonLine, type WatchdogConfig } from './watchdog.ts';
 
 const SPEC_RELAYS = ['https://api.drand.sh', 'https://api2.drand.sh', 'https://api3.drand.sh'];
 
-function required(name: string): string {
+/** A startup failure whose message names configuration only, so it is safe to print. */
+class ConfigurationError extends Error {}
+
+/** optional reads a variable, refusing one still holding the Terraform placeholder. */
+function optional(name: string): string | undefined {
   const value = process.env[name];
+  if (value && isPlaceholder(value)) {
+    const where = process.env.SSM_CONFIG_PATH ? ` at ${process.env.SSM_CONFIG_PATH.replace(/\/?$/, '/')}${name}` : '';
+    throw new ConfigurationError(`${name} is unset: put its real value in SSM Parameter Store${where}`);
+  }
+  return value || undefined;
+}
+
+function required(name: string): string {
+  const value = optional(name);
   if (!value) throw new Error('Missing configuration');
   return value;
 }
@@ -43,15 +56,15 @@ function graceBlocks(): number {
   return Number(raw);
 }
 
-/** fulfiller is the KMS key when FULFILLER_KMS_KEY_ID is set, else FULFILLER_PRIVATE_KEY (development only). */
-async function fulfiller(): Promise<{ fulfillerAccount: LocalAccount } | { fulfillerPrivateKey: Hex }> {
+/** loadFulfiller signs with the KMS key when FULFILLER_KMS_KEY_ID is set, else with FULFILLER_PRIVATE_KEY (development only). */
+async function loadFulfiller(): Promise<LocalAccount> {
   const keyId = process.env.FULFILLER_KMS_KEY_ID;
   const privateKey = process.env.FULFILLER_PRIVATE_KEY;
   delete process.env.FULFILLER_PRIVATE_KEY;
   if (keyId && privateKey) throw new Error('Configure exactly one Fulfiller');
-  if (keyId) return { fulfillerAccount: await kmsAccount({ kms: new KMSClient({}), keyId }) };
+  if (keyId) return kmsAccount({ kms: new KMSClient({}), keyId });
   if (!privateKey || !/^0x[0-9a-fA-F]{64}$/.test(privateKey)) throw new Error('Invalid Fulfiller key');
-  return { fulfillerPrivateKey: privateKey as Hex };
+  return privateKeyToAccount(privateKey as Hex);
 }
 
 async function main() {
@@ -63,8 +76,8 @@ async function main() {
     pageUrl: new URL(required('ALERT_PAGE_URL')).toString(),
     warningUrl: new URL(required('ALERT_WARNING_URL')).toString(),
     workerId: required('WORKER_ID'),
-    pageToken: process.env.ALERT_PAGE_TOKEN,
-    allowedFulfillers: (process.env.OWN_FULFILLER_ADDRESSES ?? '').split(',').filter(Boolean).map(value => getAddress(value.trim().toLowerCase())),
+    pageToken: optional('ALERT_PAGE_TOKEN'),
+    allowedFulfillers: (optional('OWN_FULFILLER_ADDRESSES') ?? '').split(',').filter(Boolean).map(value => getAddress(value.trim().toLowerCase())),
     topUpFulfillments: BigInt(process.env.TOP_UP_FULFILLMENTS ?? '100'),
   };
   if (watchdog.topUpFulfillments! <= RESERVE_FULFILLS) throw new Error('Invalid top-up threshold');
@@ -73,7 +86,7 @@ async function main() {
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
   const coordinator = getAddress(required('COORDINATOR_ADDRESS').toLowerCase());
-  const signer = await fulfiller();
+  const fulfiller = await loadFulfiller();
   const client = createPublicClient({ transport: http(rpcUrl) });
   const chainId = await client.getChainId();
   const chain = defineChain({ id: chainId, name: 'Rootstock', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
@@ -81,14 +94,18 @@ async function main() {
   // so a Draining key keeps serving after rotation.
   const loadProvingKey = provingKeyLoader(new AwsSecretSource());
   const worker = createWorker({
-    rpcUrl, relayUrls: relays, coordinator, chain, ...signer, loadProvingKey, drandPin: pin, graceBlocks: grace, watchdog,
+    rpcUrl, relayUrls: relays, coordinator, chain, fulfiller, loadProvingKey, drandPin: pin, graceBlocks: grace, watchdog,
     report: line => process.stderr.write(`${line}\n`),
   });
   const stop = new AbortController();
   process.once('SIGINT', () => stop.abort());
   process.once('SIGTERM', () => stop.abort());
   // Do not log secret-store exception text: provider errors can quote configuration.
-  for (const key of await worker.syncKeys()) process.stdout.write(`${jsonLine({ event: 'key_sync', keyId: key.keyId, keyHash: key.keyHash, held: key.held })}\n`);
+  // An empty secret is the one failure named, as it is a misconfiguration, not a key this host lacks.
+  for (const key of await worker.syncKeys()) {
+    const empty = key.error === EMPTY_SECRET_MESSAGE ? { level: 'error', error: EMPTY_SECRET_MESSAGE } : {};
+    process.stdout.write(`${jsonLine({ ...empty, event: 'key_sync', keyId: key.keyId, keyHash: key.keyHash, held: key.held })}\n`);
+  }
   process.stdout.write(`${jsonLine({ event: 'polling', coordinator, workerId: watchdog.workerId })}\n`);
   await runWorkerLoop({
     pollOnce: worker.pollOnce,
@@ -101,8 +118,9 @@ async function main() {
   });
 }
 
-try { await main(); } catch {
+try { await main(); } catch (error) {
   // Never stringify SDK errors or secret-bearing configuration.
-  process.stderr.write(`${jsonLine({ level: 'error', event: 'startup_failed', message: 'Check configuration, RPC and Secrets Manager access' })}\n`);
+  const message = error instanceof ConfigurationError ? error.message : 'Check configuration, RPC and Secrets Manager access';
+  process.stderr.write(`${jsonLine({ level: 'error', event: 'startup_failed', message })}\n`);
   process.exitCode = 1;
 }

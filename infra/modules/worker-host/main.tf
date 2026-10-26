@@ -123,14 +123,15 @@ resource "aws_instance" "host" {
   }
 
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
-    compose         = var.compose
-    data_device     = "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${replace(aws_ebs_volume.data.id, "-", "")}"
-    region          = local.region
-    log_group       = aws_cloudwatch_log_group.host.name
-    rsk_network     = var.rsk_network
-    parameter_path  = "${local.parameter_path}/"
-    image_parameter = aws_ssm_parameter.worker_image.name
-    fulfiller_key   = aws_kms_alias.fulfiller.arn
+    compose          = var.compose
+    data_device      = "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${replace(aws_ebs_volume.data.id, "-", "")}"
+    region           = local.region
+    log_group        = aws_cloudwatch_log_group.host.name
+    rsk_network      = var.rsk_network
+    parameter_path   = "${local.parameter_path}/"
+    image_parameter  = aws_ssm_parameter.worker_image.name
+    image_repository = var.worker_repository
+    fulfiller_key    = aws_kms_alias.fulfiller.arn
   })
 
   tags = { Name = local.prefix }

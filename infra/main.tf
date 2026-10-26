@@ -18,18 +18,24 @@ provider "aws" {
   }
 }
 
+locals {
+  compose           = file("${path.module}/compose/compose.yaml")
+  worker_repository = "ghcr.io/${var.ghcr_owner}/rsk-vrf-worker"
+}
+
 module "primary" {
   source    = "./modules/worker-host"
   providers = { aws = aws.primary }
 
   name         = "primary"
   grace_blocks = 0
-  compose      = file("${path.module}/compose/compose.yaml")
 
+  compose             = local.compose
   rsk_network         = var.rsk_network
   instance_type       = var.instance_type
   data_volume_gb      = var.data_volume_gb
   worker_image        = var.worker_image
+  worker_repository   = local.worker_repository
   coordinator_address = var.coordinator_address
   drand_pin           = var.drand_pin
   proving_key_hashes  = var.proving_key_hashes
@@ -41,12 +47,13 @@ module "backup" {
 
   name         = "backup"
   grace_blocks = 100
-  compose      = file("${path.module}/compose/compose.yaml")
 
+  compose             = local.compose
   rsk_network         = var.rsk_network
   instance_type       = var.instance_type
   data_volume_gb      = var.data_volume_gb
   worker_image        = var.worker_image
+  worker_repository   = local.worker_repository
   coordinator_address = var.coordinator_address
   drand_pin           = var.drand_pin
   proving_key_hashes  = var.proving_key_hashes

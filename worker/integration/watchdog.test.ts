@@ -59,8 +59,8 @@ async function sinks(body: (alerts: Alert[], url: string) => Promise<void>) {
   const url = await listen(server);
   try { await body(alerts, url); } finally { await close(server); }
 }
-function workerConfig(setup: Awaited<ReturnType<typeof deploy>>, url: string, privateKey: Hex): WorkerConfig & { fulfillerPrivateKey: Hex } {
-  return { rpcUrl, coordinator: setup.coordinator, chain, fulfillerPrivateKey: privateKey, loadProvingKey: async hash => hash.toLowerCase() === setup.key.keyHash ? setup.key : undefined, drandPin: setup.pin, relayUrl: 'http://127.0.0.1:1', watchdog: { workerId: 'primary', pageUrl: `${url}/page`, warningUrl: `${url}/warn` }, report: () => {} };
+function workerConfig(setup: Awaited<ReturnType<typeof deploy>>, url: string, privateKey: Hex): WorkerConfig {
+  return { rpcUrl, coordinator: setup.coordinator, chain, fulfiller: privateKeyToAccount(privateKey), loadProvingKey: async hash => hash.toLowerCase() === setup.key.keyHash ? setup.key : undefined, drandPin: setup.pin, relayUrl: 'http://127.0.0.1:1', watchdog: { workerId: 'primary', pageUrl: `${url}/page`, warningUrl: `${url}/warn` }, report: () => {} };
 }
 function found(alerts: Alert[], event: string, level: string) { const alert = alerts.find(item => item.event === event && item.level === level); assert.ok(alert, `received ${level} ${event}`); return alert; }
 async function withRelay(body: (relayUrl: string) => Promise<void>) {
@@ -299,14 +299,15 @@ describe('watchdog on real rskj', { concurrency: 1 }, () => {
       const retired = await client.readContract({ address: setup.coordinator, abi: coordinatorAbi, functionName: 'getProvingKey', args: [pending.record.keyId] });
       assert.equal(retired[2], 4, 'original Draining Key is now Retired');
       const logs: string[] = [];
-      const config = workerConfig(setup, url, `0x${'9d'.repeat(32)}`);
+      const fulfillerKey: Hex = `0x${'9d'.repeat(32)}`;
+      const config = workerConfig(setup, url, fulfillerKey);
       config.relayUrl = relayUrl;
       config.nowSeconds = () => setup.pin.genesis + (pending.record.targetRound - 1n) * setup.pin.period;
       config.report = line => logs.push(line);
       let relayAvailable = false;
       config.fetch = async (input, init) => relayAvailable ? fetch(input, init) : new Response('offline', { status: 503 });
       const worker = createWorker(config);
-      const nonceBefore = await client.getTransactionCount({ address: privateKeyToAccount(config.fulfillerPrivateKey).address });
+      const nonceBefore = await client.getTransactionCount({ address: config.fulfiller.address });
       await worker.pollOnce();
       assert.equal(found(alerts, 'missed_deadline', 'page').proof, null, 'unavailable relay still pages immediately');
       relayAvailable = true;
@@ -332,11 +333,11 @@ describe('watchdog on real rskj', { concurrency: 1 }, () => {
       const log = logs.map(line => JSON.parse(line) as Alert).find(a => a.event === 'missed_deadline' && a.proof);
       assert.ok(log);
       assert.deepEqual(log.proof, publication, 'structured log preserves all public verification material');
-      assert.equal(JSON.stringify([logs, alerts]).includes(config.fulfillerPrivateKey.slice(2)), false);
+      assert.equal(JSON.stringify([logs, alerts]).includes(fulfillerKey.slice(2)), false);
       assert.equal(JSON.stringify([logs, alerts]).includes(fixture.vectors[0].vrf.secretKey.slice(2)), false);
       await worker.pollOnce();
       assert.equal(alerts.filter(a => a.event === 'missed_deadline').length, 2);
-      assert.equal(await client.getTransactionCount({ address: privateKeyToAccount(config.fulfillerPrivateKey).address }), nonceBefore, 'expired proof is published without sending a transaction');
+      assert.equal(await client.getTransactionCount({ address: config.fulfiller.address }), nonceBefore, 'expired proof is published without sending a transaction');
     }));
   });
 

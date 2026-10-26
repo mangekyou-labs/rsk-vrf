@@ -14,3 +14,8 @@ output "hosts" {
 output "operator_role_arn" {
   value = aws_iam_role.operator.arn
 }
+
+output "host_access_role_arn" {
+  description = "Shell on the hosts. Equivalent to signing as either Fulfiller."
+  value       = aws_iam_role.host_access.arn
+}

@@ -138,7 +138,7 @@ it('real rskj: full callback caps, isolated failures and reserve boundaries', { 
         await verifySettled(pending.requestId, pending.composed.beta);
         pending = await request(cap, 0);
       }
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: async () => key, relayUrl, drandPin: { ...beacon, publicKey: beacon.publicKey as [bigint, bigint, bigint, bigint] }, nowSeconds: () => beacon.genesis + (pending.record.targetRound - 1n) * beacon.period });
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: async () => key, relayUrl, drandPin: { ...beacon, publicKey: beacon.publicKey as [bigint, bigint, bigint, bigint] }, nowSeconds: () => beacon.genesis + (pending.record.targetRound - 1n) * beacon.period });
       const result = await worker.pollOnce();
       const submitted = result.find(entry => entry.requestId === pending.requestId);
       assert.equal(submitted?.status, 'submitted');

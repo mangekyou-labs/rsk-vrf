@@ -159,7 +159,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let invalidSignature = true;
       await mineBlocks(confirmations);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
+        rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -183,7 +183,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const again = await worker.pollOnce();
       assert.equal(forRequest(again, requestId)?.status, 'waiting');
       assert.equal(await nonceOf(fulfiller.address), inflightNonce, 'a second poll does not send another fulfillment');
-      const restartedSameFulfiller = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now });
+      const restartedSameFulfiller = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now });
       assert.equal(forRequest(await restartedSameFulfiller.pollOnce(), requestId)?.status, 'waiting');
       assert.equal(await nonceOf(fulfiller.address), before + 1, 'restart does not duplicate an unmined fulfill');
       const fulfilledReceipt = await receipt(submitted[0]!.transactionHash!);
@@ -220,7 +220,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let relayCalls = 0;
       const before = await nonceOf(fulfiller.address);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon),
+        rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         fetch: async (input, init) => { relayCalls++; return fetch(input, init); },
       });
@@ -246,12 +246,12 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const confirmations = Number(record.confirmations);
       const roundTime = beacon.genesis + (record.targetRound - 1n) * beacon.period;
       await mineBlocks(confirmations);
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const submitted = await worker.pollOnce();
       assert.equal(forRequest(submitted, requestId)?.status, 'submitted');
       await receipt(forRequest(submitted, requestId)!.transactionHash!);
       const before = await nonceOf(backup.address);
-      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
+      const restarted = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(backupKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => roundTime });
       const seen = await restarted.pollOnce();
       assert.equal(forRequest(seen, requestId)?.status, 'waiting');
       assert.equal(seen.some(item => item.status === 'submitted'), false);
@@ -273,7 +273,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
     let fetched = 0;
     const before = await nonceOf(fulfiller.address);
     const worker = createWorker({
-      rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
+      rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key),
       relayUrls: ['http://127.0.0.1:1', 'http://127.0.0.1:1', 'http://127.0.0.1:1'],
       drandPin: { ...pinOf(beacon), period: beacon.period + 1n },
       nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
@@ -309,7 +309,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const { requestId, record } = await requestRandomness(coordinator, `0x${'22'.repeat(32)}`);
         await mineBlocks(Number(record.confirmations));
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
+          rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon),
           nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         });
@@ -351,7 +351,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const { requestId, record } = await requestRandomness(coordinator, `0x${'33'.repeat(32)}`);
         await mineBlocks(Number(record.confirmations));
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
+          rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon),
           nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
         });
@@ -405,7 +405,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const lines: string[] = [];
         const before = await nonceOf(fulfiller.address);
         const worker = createWorker({
-          rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
+          rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key),
           relayUrls: urls, drandPin: pinOf(beacon), nowSeconds: () => now,
           report: line => lines.push(line),
         });
@@ -480,7 +480,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const quote = await quotedStart();
       assert.equal(quote.cap, quote.minimum > 0n ? 80n * quote.minimum - 1n : null);
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key),
+        rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key),
         relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
       });
       const results = await worker.pollOnce();
@@ -567,7 +567,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const now = firstRound > secondRound ? firstRound : secondRound;
       const bucket = { n: 0 };
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: poorKey, loadProvingKey: keyStore(key),
+        rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(poorKey), loadProvingKey: keyStore(key),
         relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now, fetch: countingFetch(bucket),
       });
       const before = await nonceOf(poor.address);
@@ -664,7 +664,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.equal(record.confirmations, 12);
       const bucket = { n: 0 };
       const worker = createWorker({
-        rpcUrl, coordinator, chain, fulfillerPrivateKey: backupKey, loadProvingKey: keyStore(key), relayUrl,
+        rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(backupKey), loadProvingKey: keyStore(key), relayUrl,
         drandPin: pinOf(beacon), graceBlocks: 100, fetch: countingFetch(bucket),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
       });
@@ -715,8 +715,8 @@ describe('worker regtest', { concurrency: 1 }, () => {
         rpcUrl, coordinator, chain, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon),
         nowSeconds: () => beacon.genesis + (record.targetRound - 1n) * beacon.period,
       };
-      const primaryWorker = createWorker({ ...shared, fulfillerPrivateKey: primaryKey, graceBlocks: 0, fetch: countingFetch(primaryHits) });
-      const backupWorker = createWorker({ ...shared, fulfillerPrivateKey: backupKey, graceBlocks: 100, fetch: countingFetch(backupHits) });
+      const primaryWorker = createWorker({ ...shared, fulfiller: privateKeyToAccount(primaryKey), graceBlocks: 0, fetch: countingFetch(primaryHits) });
+      const backupWorker = createWorker({ ...shared, fulfiller: privateKeyToAccount(backupKey), graceBlocks: 100, fetch: countingFetch(backupHits) });
       const fulfillableAt = BigInt(record.requestBlock) + BigInt(record.confirmations) + 100n;
       await mineTo(fulfillableAt);
       const primaryBefore = await nonceOf(primary.address);
@@ -801,7 +801,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       let now = roundTime - 1n;
       let relayCalls = 0;
       let invalidSignature = true;
-      let worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
+      let worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => {
           relayCalls++;
           const response = await fetch(input, init);
@@ -900,7 +900,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       now = nextBeacon.genesis + (pendingRecord.targetRound - 1n) * nextBeacon.period;
       for (let n = 0; n < pendingRecord.confirmations; n++) await mine();
       // The upgraded coordinator's new beacon requires an explicit new local pin.
-      worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(nextBeacon), nowSeconds: () => now });
+      worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl, drandPin: pinOf(nextBeacon), nowSeconds: () => now });
       const afterUpgrade = await worker.pollOnce();
       assert.equal(afterUpgrade[0]?.status, 'submitted', 'pre-upgrade Pending request remains Fulfillable');
       await receipt(afterUpgrade[0]!.transactionHash!);
@@ -1005,7 +1005,7 @@ describe('worker regtest: key rotation and revocation', { concurrency: 1 }, () =
       const newKey = ProvingKey.generate();
       await register(coordinator, oldKey);
       let now = 0n;
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(oldKey, newKey), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now });
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(oldKey, newKey), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now });
 
       const before = await makeRequest(coordinator, 'a1');
       assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
@@ -1037,7 +1037,7 @@ describe('worker regtest: key rotation and revocation', { concurrency: 1 }, () =
       const { id, record } = await makeRequest(coordinator, 'b1');
       let relayCalls = 0;
       let now = 0n;
-      const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: keyStore(key), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now,
+      const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: keyStore(key), relayUrl: relay.url, drandPin: pinOf(beacon), nowSeconds: () => now,
         fetch: async (input, init) => { relayCalls++; return fetch(input, init); } });
       assert.deepEqual((await worker.pollOnce()).map(x => x.status), ['waiting']);
 
@@ -1069,7 +1069,7 @@ describe('worker regtest: key rotation and revocation', { concurrency: 1 }, () =
     await register(coordinator, second);
     const loads: Hex[] = [];
     const store = keyStore(first, second, third);
-    const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
+    const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
       loadProvingKey: async (keyHash) => {
         loads.push(keyHash);
         return store(keyHash);
@@ -1095,7 +1095,7 @@ describe('worker regtest: key rotation and revocation', { concurrency: 1 }, () =
     const [missing, failing] = [ProvingKey.generate(), ProvingKey.generate()];
     await register(coordinator, missing);
     await register(coordinator, failing);
-    const worker = createWorker({ rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
+    const worker = createWorker({ rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), relayUrl: 'http://127.0.0.1:1', drandPin: pinOf(beacon),
       loadProvingKey: async (keyHash) => {
         if (keyHash.toLowerCase() === failing.keyHash) throw new Error('AccessDeniedException');
         return undefined;

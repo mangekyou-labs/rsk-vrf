@@ -10,7 +10,8 @@ import { kmsAccount } from '../src/kms-signer.ts';
 // A known secp256k1 key standing in for the KMS key; never a real Fulfiller.
 const SECRET: Hex = '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318';
 const N = secp256k1.Point.CURVE().n;
-// SubjectPublicKeyInfo header for an uncompressed secp256k1 point, as KMS returns it.
+// SubjectPublicKeyInfo header for an uncompressed secp256k1 point, as KMS returns it. Kept apart
+// from the one in src/kms-signer.ts on purpose, so a wrong header there fails here.
 const SPKI_HEADER = '3056301006072a8648ce3d020106052b8104000a034200';
 
 function derInteger(value: bigint): string {

@@ -21,6 +21,7 @@ write_files:
       SSM_CONFIG_PATH=${parameter_path}
       FULFILLER_KMS_KEY_ID=${fulfiller_key}
       IMAGE_PARAMETER=${image_parameter}
+      WORKER_REPOSITORY=${image_repository}
 
   # Formats the data volume on first boot only, then mounts it by UUID.
   - path: /usr/local/sbin/rsk-vrf-mount-data
@@ -41,6 +42,8 @@ write_files:
       chown 1001:1001 /data/rskj
 
   # Pulls the pinned worker image digest from SSM, then (re)starts the stack.
+  # The image must be a digest of WORKER_REPOSITORY, which only Terraform sets:
+  # whoever chooses the image can sign as this host's Fulfiller.
   - path: /usr/local/bin/rsk-vrf-up
     permissions: "0755"
     content: |
@@ -49,10 +52,11 @@ write_files:
       cd /opt/rsk-vrf
       . ./host.env
       image=$(aws ssm get-parameter --region "$AWS_REGION" --name "$IMAGE_PARAMETER" --query Parameter.Value --output text)
-      case "$image" in
-        *@sha256:*) ;;
-        *) echo "WORKER_IMAGE is not pinned by digest" >&2; exit 1 ;;
-      esac
+      digest=$${image#"$WORKER_REPOSITORY@sha256:"}
+      case "$digest" in *[!0-9a-f]* | "") hex=no ;; *) hex=yes ;; esac
+      if [ "$digest" = "$image" ] || [ "$hex" = no ] || [ $${#digest} -ne 64 ]; then
+        echo "WORKER_IMAGE is not $WORKER_REPOSITORY@sha256:<64 hex>" >&2; exit 1
+      fi
       echo "WORKER_IMAGE=$image" > worker-image.env
       exec docker compose --env-file host.env --env-file worker-image.env up -d --remove-orphans
 

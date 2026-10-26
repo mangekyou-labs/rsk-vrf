@@ -26,6 +26,11 @@ locals {
   ])
 
   placeholder = "unset: put the real value with aws ssm put-parameter --overwrite"
+
+  # The only parameters the operator role may write. Anything that decides what
+  # runs or what it talks to (WORKER_IMAGE, RSK_RPC_URL, COORDINATOR_ADDRESS)
+  # stays Terraform's.
+  operator_parameters = concat(tolist(local.secret_config), ["OWN_FULFILLER_ADDRESSES", "ALERT_PAGE_TOKEN"])
 }
 
 resource "aws_ssm_parameter" "config" {
@@ -52,7 +57,7 @@ resource "aws_ssm_parameter" "secret_config" {
 resource "aws_ssm_parameter" "own_fulfillers" {
   name           = "${local.parameter_path}/OWN_FULFILLER_ADDRESSES"
   type           = "String"
-  insecure_value = "unset"
+  insecure_value = local.placeholder
 
   lifecycle {
     ignore_changes = [insecure_value]
