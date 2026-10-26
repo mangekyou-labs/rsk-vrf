@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 /// @dev Test-only stand-in for the Admin Safe: its signer forwards calls, such as
 ///      `acceptOwnership`, so the coordinator sees a contract owner as on chain 31.
+///      Like a Safe it accepts RBTC, so as the Payee it can `withdrawFees`.
 contract SafeStandIn {
     address public immutable SIGNER;
 
@@ -20,4 +21,6 @@ contract SafeStandIn {
             }
         }
     }
+
+    receive() external payable {}
 }

@@ -74,4 +74,4 @@ Discard the deployer key only after the check passes and the Blockscout proxy vi
 
 ## Reading the record
 
-The worker can take the coordinator address from the record: set `COORDINATOR_DEPLOYMENT_FILE=deployments/31.json` in place of `COORDINATOR_ADDRESS` (see `worker/README.md`). The demo (#39) and the README (#40) will read the same file once those tickets land.
+The worker can take the coordinator address from the record: set `COORDINATOR_DEPLOYMENT_FILE=deployments/31.json` in place of `COORDINATOR_ADDRESS` (see `worker/README.md`). The demo scripts read the same file through `DEPLOYMENT_FILE` (see [the demo walkthrough](../demo.md)). The README (#40) will read it once that ticket lands.
