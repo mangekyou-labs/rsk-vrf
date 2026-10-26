@@ -78,6 +78,7 @@ func expectedRequest(r *http.Request) (relayExpected, error) {
 
 func testRelayHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /verify", verifyPublishedProof)
 	mux.HandleFunc("GET /public/{round}", func(w http.ResponseWriter, r *http.Request) {
 		round, err := strconv.ParseUint(r.PathValue("round"), 10, 64)
 		if err != nil || round == 0 {
