@@ -77,4 +77,21 @@ describe('worker run', () => {
     assertNoSecret(stderr + stdout, fulfillerKey, 'startup');
     assertNoSecret(stderr + stdout, pinWord, 'startup');
   });
+
+  it('names an alert parameter still holding the Terraform placeholder', async () => {
+    const { code, stdout, stderr } = await runWorker({
+      RSK_RPC_URL: 'http://127.0.0.1:1',
+      COORDINATOR_ADDRESS: `0x${'11'.repeat(20)}`,
+      FULFILLER_PRIVATE_KEY: fulfillerKey,
+      DRAND_PIN_PUBLIC_KEY: [pinWord, pinWord, pinWord, pinWord].join(','),
+      DRAND_PIN_GENESIS: '1727521075',
+      DRAND_PIN_PERIOD: '3',
+      ALERT_WARNING_URL: 'unset: put the real value with aws ssm put-parameter --overwrite',
+    });
+    assert.equal(code, 1);
+    assert.equal(stdout, '');
+    assert.match(stderr, /"event":"startup_failed"/);
+    assert.match(stderr, /ALERT_WARNING_URL is unset/);
+    assertNoSecret(stderr, fulfillerKey, 'startup');
+  });
 });

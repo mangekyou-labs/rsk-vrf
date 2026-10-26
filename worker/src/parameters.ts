@@ -9,6 +9,14 @@ export interface SsmSender {
   send(command: GetParametersByPathCommand): Promise<{ Parameters?: { Name?: string; Value?: string }[]; NextToken?: string }>;
 }
 
+/**
+ * isPlaceholder tells whether value is the text Terraform puts in a parameter
+ * that must be set out of band (infra/modules/worker-host/config.tf).
+ */
+export function isPlaceholder(value: string): boolean {
+  return value.startsWith('unset');
+}
+
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /** loadParameters returns the parameters directly under path, decrypted, by variable name. */
