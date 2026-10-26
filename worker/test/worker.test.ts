@@ -76,6 +76,23 @@ it('resubmits after a finished outcome disappears above a rewound chain head', (
   state.latest = 99n; state.outcome = null; state.status = 1;
   assert.equal((await worker.pollOnce())[0]?.status, 'submitted');
 }));
+it('counts outcome depth from the new canonical block after a reorg moves an outcome later', () => scenario(async ({ state, makeWorker }) => {
+  state.status = 2; state.outcome = 100n;
+  const worker = makeWorker(); await worker.pollOnce();
+  state.latest = 112n; state.outcome = 110n;
+  assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
+  state.latest = 121n; assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
+  state.latest = 122n; assert.deepEqual(await worker.pollOnce(), []);
+}));
+it('tracks a finished request again if its canonical outcome moves within the twelve-block wait', () => scenario(async ({ state, makeWorker }) => {
+  state.status = 2; state.outcome = 100n;
+  const worker = makeWorker(); await worker.pollOnce();
+  state.latest = 112n; assert.deepEqual(await worker.pollOnce(), []);
+  state.latest = 113n; state.outcome = 111n;
+  assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
+  state.latest = 122n; assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
+  state.latest = 123n; assert.deepEqual(await worker.pollOnce(), []);
+}));
 it('rebroadcasts missing bytes without resetting the three-block replacement clock', () => scenario(async ({ state, makeWorker }) => {
   const worker = makeWorker(); assert.equal((await worker.pollOnce())[0]?.status, 'submitted');
   state.hashMissing = true;

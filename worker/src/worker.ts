@@ -462,14 +462,22 @@ export function createWorker(config: WorkerConfig) {
         if (prior == null || log.blockNumber < prior) outcomeInScan.set(log.args.requestId, log.blockNumber);
       }
       for (const [id, outcomeBlock] of finished) {
-        if (outcomeBlock > latest || (outcomeBlock >= fromBlock && !outcomeInScan.has(id))) {
+        const seen = outcomeInScan.get(id);
+        if (seen != null) {
+          if (latest < seen + OUTCOME_DEPTH) {
+            finished.delete(id);
+            pending.set(id, { outcomeBlock: seen });
+          } else {
+            finished.set(id, seen);
+          }
+        } else if (outcomeBlock > latest || outcomeBlock >= fromBlock) {
           finished.delete(id);
           pending.set(id, { outcomeBlock: null });
         }
       }
       for (const [id, state] of pending) {
         const seen = outcomeInScan.get(id);
-        if (seen != null) state.outcomeBlock = state.outcomeBlock == null || seen < state.outcomeBlock ? seen : state.outcomeBlock;
+        if (seen != null) state.outcomeBlock = seen;
         else if (state.outcomeBlock != null && (state.outcomeBlock > latest || state.outcomeBlock >= fromBlock)) state.outcomeBlock = null;
       }
 
