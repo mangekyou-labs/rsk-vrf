@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -63,6 +63,7 @@ describe('deploy and Safe hand-off on real rskj', { concurrency: 1 }, () => {
     const safe = safeReceipt.contractAddress;
     const [x, y] = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey).publicKey;
 
+    mkdirSync(deploymentsDir, { recursive: true });
     const dir = mkdtempSync(join(deploymentsDir, 'test-'));
     const record = join(dir, '33.json');
     const editedRecord = join(dir, '33.edited.json');
