@@ -10,7 +10,7 @@ import { createWorker } from '../src/worker.ts';
 const golden = JSON.parse(readFileSync(new URL('../../tools/vrf-vectors-go/coordinator-vectors.json', import.meta.url), 'utf8'));
 const key = ProvingKey.fromHex(golden.vectors[0].vrf.secretKey);
 const address = `0x${'11'.repeat(20)}` as const;
-const requestId = `0x${'22'.repeat(32)}` as const;
+const requestId = `0x${'24'.repeat(32)}` as const;
 const zero = `0x${'00'.repeat(32)}` as const;
 const pin = { publicKey: [1n, 2n, 3n, 4n] as const, genesis: 1n, period: 1n };
 const signature = `0x${golden.vectors[0].drandSignature.map((word: string) => word.slice(2)).join('')}`;
@@ -19,7 +19,7 @@ async function scenario(body: (s: Awaited<ReturnType<typeof setup>>) => Promise<
   const s = await setup(); try { await body(s); } finally { await new Promise<void>(resolve => s.server.close(() => resolve())); }
 }
 async function setup() {
-  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0 };
+  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, callbackGasCap: 0, simulationGas: [] as bigint[], simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0 };
   function log(eventName: 'RandomnessRequested' | 'Fulfilled', block: bigint) {
     const topics = encodeEventTopics({ abi: coordinatorAbi, eventName, args: { requestId, requester: address, fulfiller: address } as never });
     const data = eventName === 'Fulfilled' ? encodeAbiParameters([{ type: 'bytes32' }], [zero]) : encodeAbiParameters([{ type: 'bytes32' }, { type: 'uint32' }, { type: 'uint64' }, { type: 'uint48' }, { type: 'uint48' }, { type: 'uint96' }, { type: 'uint32' }], [zero, 1, 1n, 90, 5000, 0n, 0]);
@@ -45,10 +45,10 @@ async function setup() {
         }
         case 'eth_call': {
           const decoded = decodeFunctionData({ abi: coordinatorAbi, data: call.params[0].data });
-          if (decoded.functionName === 'getRequest') { state.requestReads++; result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getRequest', result: { requester: address, status: state.status, callbackGasCap: 0, requestBlock: Number(state.requestBlock), drandConfigId: 0, fee: 0n, targetRound: 1n, deadline: 5000, confirmations: 2, keyId: 1, beta: zero } }); }
+          if (decoded.functionName === 'getRequest') { state.requestReads++; result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getRequest', result: { requester: address, status: state.status, callbackGasCap: state.callbackGasCap, requestBlock: Number(state.requestBlock), drandConfigId: 0, fee: 0n, targetRound: 1n, deadline: 5000, confirmations: 2, keyId: 1, beta: zero } }); }
           else if (decoded.functionName === 'getProvingKey') result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getProvingKey', result: [key.keyHash, address, 1] });
           else if (decoded.functionName === 'getDrandConfig') result = encodeFunctionResult({ abi: coordinatorAbi, functionName: 'getDrandConfig', result: pin });
-          else { if (state.simulationFails) throw Error('simulation reverted'); result = '0x'; }
+          else { state.simulationGas.push(BigInt(call.params[0].gas)); if (state.simulationFails) throw Error('simulation reverted'); result = '0x'; }
           break;
         }
         case 'eth_sendRawTransaction': state.sent.push(call.params[0]); state.pendingNonce = Math.max(state.pendingNonce, Number(parseTransaction(call.params[0]).nonce) + 1); result = keccak256(call.params[0]); break;
@@ -105,7 +105,7 @@ it('rebroadcasts missing bytes without resetting the three-block replacement clo
 }));
 it('stops replacements, rebroadcasts and gap fills below reserve while still reconciling nonces and receipts', () => scenario(async ({ state, makeWorker }) => {
   const worker = makeWorker(); await worker.pollOnce();
-  state.balance = 1_115_399_999n; state.latest = 103n;
+  state.balance = 6_934_399_999n; state.latest = 103n;
   await worker.pollOnce(); assert.equal(state.sent.length, 1, 'low funds cannot bump');
   state.hashMissing = true; await worker.pollOnce(); assert.equal(state.sent.length, 1, 'low funds cannot rebroadcast');
   state.minedNonce = 1; state.pendingNonce = 2; await worker.pollOnce();
@@ -146,9 +146,9 @@ it('retains original bytes when replacement simulation fails and bumps only thre
   assert.equal(parseTransaction(state.sent.at(-1)!).gasPrice, 247n);
 }));
 it('can fulfill at the exact twenty-fulfillment reserve and stops one wei below it', () => scenario(async ({ state, makeWorker }) => {
-  state.balance = 1_115_399_999n;
+  state.balance = 6_934_399_999n;
   const worker = makeWorker(); assert.equal((await worker.pollOnce())[0]?.status, 'waiting'); assert.equal(state.sent.length, 0);
-  state.balance = 1_115_400_000n;
+  state.balance = 6_934_400_000n;
   assert.equal((await worker.pollOnce())[0]?.status, 'submitted'); assert.equal(state.sent.length, 1);
 }));
 it('rebroadcasts identical bytes when the gas cap prevents a valid replacement bump', () => scenario(async ({ state, makeWorker }) => {
@@ -162,11 +162,35 @@ it('blocks self-transfer nonce gap fills below reserve and resumes at equality',
   // txpool adopts only this process's Fulfiller; derive its public address.
   const fulfiller = privateKeyToAccount(`0x${'34'.repeat(32)}`).address;
   state.pool = { [fulfiller]: { '2': { nonce: '0x2', hash: requestId, to: fulfiller, input: '0x', gas: '0x5208', gasPrice: '0x6e', value: '0x0' } } };
-  state.pendingNonce = 0; state.balance = 1_115_399_999n;
+  state.pendingNonce = 0; state.balance = 6_934_399_999n;
   const worker = makeWorker(); await worker.pollOnce(); assert.equal(state.sent.length, 0);
   // Reserve also accounts for the adopted transaction's 2,310,000 wei cost.
-  state.balance = 1_117_710_000n; await worker.pollOnce();
+  state.balance = 6_936_710_000n; await worker.pollOnce();
   assert.equal(state.sent.length, 1);
   const tx = parseTransaction(state.sent[0]!);
   assert.equal(tx.nonce, 0); assert.equal(tx.to?.toLowerCase(), fulfiller.toLowerCase()); assert.equal(tx.data ?? '0x', '0x');
+}));
+
+it('preserves proof-aware full callback gas through simulation, signing and replacement', () => scenario(async ({ state, makeWorker }) => {
+  state.callbackGasCap = 2_500_000;
+  const worker = makeWorker();
+  assert.equal((await worker.pollOnce())[0]?.status, 'submitted');
+  // This fixed domain/round/signature takes two hash-to-curve tries.
+  assert.equal(parseTransaction(state.sent[0]!).gas, 3_172_000n);
+  assert.equal(state.simulationGas[0], 3_172_000n);
+  state.latest = 103n;
+  await worker.pollOnce();
+  assert.equal(parseTransaction(state.sent.at(-1)!).gas, 3_172_000n);
+  assert.equal(state.simulationGas.at(-1), 3_172_000n);
+}));
+
+it('raises the twenty-fulfillment reserve for proof work above the maximum-cap floor', () => scenario(async ({ state, makeWorker }) => {
+  state.callbackGasCap = 2_500_000;
+  state.balance = 6_978_399_999n; // 20 × 3,172,000 gas × 110 wei, less one wei.
+  const worker = makeWorker();
+  assert.equal((await worker.pollOnce())[0]?.status, 'waiting');
+  assert.equal(state.sent.length, 0);
+  state.balance = 6_978_400_000n;
+  assert.equal((await worker.pollOnce())[0]?.status, 'submitted');
+  assert.equal(state.sent.length, 1);
 }));

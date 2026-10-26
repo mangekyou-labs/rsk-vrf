@@ -365,10 +365,10 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
 
     function _deliverCallback(bytes32 requestId, address requester, bytes32 beta, uint32 cap) private {
         bytes memory data = abi.encodeWithSignature("onRandomness(bytes32,bytes32)", requestId, beta);
-        // EIP-150 retains 1/64 of available gas. Include that headroom as well as
-        // the reserve for call overhead and the outcome event so the full cap is
-        // forwarded. A revert here rolls back the entire fulfillment.
-        if (gasleft() < uint256(cap) + uint256(cap) / 63 + CALLBACK_RESERVE) revert InsufficientGasForCallback();
+        // Rootstock forwards the requested gas without EIP-150's 63/64 rule.
+        // Check again after effects and calldata encoding so the reserve covers
+        // only CALL overhead and the outcome event. A revert rolls back settlement.
+        if (gasleft() < uint256(cap) + CALLBACK_RESERVE) revert InsufficientGasForCallback();
         bool success;
         assembly ("memory-safe") {
             success := call(cap, requester, 0, add(data, 32), mload(data), 0, 0)
@@ -417,6 +417,14 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
 
     function deriveRandom(bytes32 requestId, bytes32 context) external view returns (uint256) {
         return VRFDerivation.random(_fulfilledBeta(requestId), context);
+    }
+
+    function deriveRandomInRange(bytes32 requestId, bytes32 context, uint256 min, uint256 max)
+        external
+        view
+        returns (uint256)
+    {
+        return VRFDerivation.randomInRange(_fulfilledBeta(requestId), context, min, max);
     }
 
     function getProvingKey(uint32 keyId) external view returns (ProvingKey memory) {

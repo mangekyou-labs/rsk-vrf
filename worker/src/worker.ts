@@ -53,7 +53,12 @@ const MAX_LOG_SPAN = 5_000n;
 const OUTCOME_DEPTH = 12n;
 const REQUEST_STATUS = { NONE: 0, PENDING: 1, FULFILLED: 2, REFUNDED: 3 } as const;
 const KEY_STATE = { NONE: 0 } as const;
-const FULFILL_GAS = 507_000n;
+// One-try verification headroom plus the callback's post-call reserve.
+const VERIFICATION_AND_RESERVE_GAS = 652_000n;
+const ADDITIONAL_HASH_TO_CURVE_GAS = 20_000n; // Spec measurement is about 15k.
+// Reconciliation runs before proofs are available. Its balance floor covers
+// twenty maximum-cap callbacks; a proof above this allowance raises the floor.
+const RESERVE_FULFILL_GAS = VERIFICATION_AND_RESERVE_GAS + 2_500_000n;
 const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
 const SELF_GAS = 21_000n;
@@ -84,6 +89,7 @@ type Fulfillable = {
   deadline: bigint;
   drandConfigId: number;
   roundTime: bigint;
+  callbackGasCap: number;
 };
 
 function isLogCapError(error: unknown): boolean {
@@ -207,7 +213,8 @@ export function createWorker(config: WorkerConfig) {
   async function publish(fields: Inflight): Promise<Hex | null> {
     let reserved = 0n;
     for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
-    if (balance - reserved < reserveCost) return null;
+    const candidateReserve = RESERVE_FULFILLS * fields.gas * fields.gasPrice;
+    if (balance - reserved < reserveCost || balance - reserved < candidateReserve) return null;
     if (fields.serialized == null && (!fields.canResign || fields.to == null)) return null;
     try {
       const to = fields.to;
@@ -441,7 +448,7 @@ export function createWorker(config: WorkerConfig) {
       const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
       const quoted = startPrice(await publicClient.getGasPrice(), await blockMinimum());
       balance = await publicClient.getBalance({ address: account.address });
-      reserveCost = RESERVE_FULFILLS * FULFILL_GAS * quoted.price;
+      reserveCost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
       await reconcile(latest, quoted.price, quoted.cap);
       const fromBlock = latest > BACKFILL_BLOCKS ? latest - BACKFILL_BLOCKS : 0n;
       const [requestedLogs, fulfilledLogs, refundedLogs] = await Promise.all([
@@ -545,7 +552,7 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId, status: 'waiting' });
             continue;
           }
-          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime });
+          fulfillable.push({ requestId, requester: request.requester, targetRound: request.targetRound, deadline: BigInt(request.deadline), drandConfigId: request.drandConfigId, roundTime, callbackGasCap: request.callbackGasCap });
         } catch (error) {
           if (error instanceof NonceSyncError) throw error;
           results.push({ requestId, status: 'retry' });
@@ -553,7 +560,7 @@ export function createWorker(config: WorkerConfig) {
       }
       fulfillable.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
       let effective = 0n;
-      const cost = RESERVE_FULFILLS * FULFILL_GAS * quoted.price;
+      const cost = RESERVE_FULFILLS * RESERVE_FULFILL_GAS * quoted.price;
       if (fulfillable.length > 0) {
         let reserved = 0n;
         for (const entry of inflight.values()) reserved += entry.gas * entry.gasPrice;
@@ -584,21 +591,27 @@ export function createWorker(config: WorkerConfig) {
           }
           stalled.delete(item.requestId);
           const composed = composeFulfillment({ chainId: BigInt(config.chain.id), coordinator: config.coordinator, requester: item.requester, requestId: item.requestId, targetRound: item.targetRound, signature }, config.provingKey);
+          // Preserve the full frozen cap even when simulation sees a cheap path.
+          const gas = VERIFICATION_AND_RESERVE_GAS + ADDITIONAL_HASH_TO_CURVE_GAS * BigInt(composed.hashToCurveTries - 1) + BigInt(item.callbackGasCap);
+          if (effective < RESERVE_FULFILLS * gas * quoted.price) {
+            results.push({ requestId: item.requestId, status: 'waiting' });
+            continue;
+          }
           const data = encodeFunctionData({ abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature] });
           await publicClient.simulateContract({
             address: config.coordinator, abi: coordinatorAbi, functionName: 'fulfill', args: [item.requestId, composed.proof, composed.drandSignature],
-            account, type: 'legacy', gas: FULFILL_GAS, gasPrice: quoted.price,
+            account, type: 'legacy', gas, gasPrice: quoted.price,
           });
           const nonce = await ensureNonce();
           const transactionHash = await publish({
-            nonce, requestId: item.requestId, hash: '0x', serialized: null, gasPrice: quoted.price, gas: FULFILL_GAS, submittedBlock: latest,
+            nonce, requestId: item.requestId, hash: '0x', serialized: null, gasPrice: quoted.price, gas, submittedBlock: latest,
             to: config.coordinator, data, value: 0n, canResign: true,
           });
           if (transactionHash == null) {
             results.push({ requestId: item.requestId, status: 'retry' });
             continue;
           }
-          effective -= FULFILL_GAS * quoted.price;
+          effective -= gas * quoted.price;
           results.push({ requestId: item.requestId, status: 'submitted', transactionHash });
         } catch (error) {
           if (error instanceof NonceSyncError) throw error;

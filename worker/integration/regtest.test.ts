@@ -506,7 +506,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
         const tx = await client.getTransaction({ hash: item.transactionHash });
         assert.equal(tx.type, 'legacy');
         if (tx.type !== 'legacy') assert.fail('fulfillment is a legacy transaction');
-        assert.equal(tx.gas, 507_000n);
+        assert.ok(tx.gas >= 652_000n, 'proof-aware verification budget');
         assert.equal(tx.gasPrice, quote.price);
         const decoded = decodeFunctionData({ abi: coordinatorAbi, data: tx.input });
         assert.equal(decoded.functionName, 'fulfill');
@@ -538,7 +538,7 @@ describe('worker regtest', { concurrency: 1 }, () => {
       await mineBlocks(Number(second.record.confirmations));
       const balanceOf = () => client.getBalance({ address: poor.address });
       let quote = await quotedStart();
-      let cost = 20n * 507_000n * quote.price;
+      let cost = 20n * 3_152_000n * quote.price;
       let balance = await balanceOf();
       if (balance >= cost && balance > fee + 1n) {
         const target = cost - 1n;
@@ -546,19 +546,19 @@ describe('worker regtest', { concurrency: 1 }, () => {
         await receipt(await poorWallet.sendTransaction({ to: poor.address, value, gas: 21_000n, gasPrice: 1n }));
       }
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
       balance = await balanceOf();
       if (balance < cost - 1n) {
         await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - 1n - balance, gas: 21_000n, gasPrice: 1n }));
       }
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
       balance = await balanceOf();
       if (balance >= cost && balance > fee + 1n) {
         await receipt(await poorWallet.sendTransaction({ to: poor.address, value: 1n, gas: 21_000n, gasPrice: 1n }));
       }
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
       assert.ok(await balanceOf() < cost);
       const firstRound = beacon.genesis + (first.record.targetRound - 1n) * beacon.period;
       const secondRound = beacon.genesis + (second.record.targetRound - 1n) * beacon.period;
@@ -581,20 +581,20 @@ describe('worker regtest', { concurrency: 1 }, () => {
       assert.equal(refunds.length, 0);
       for (let attempt = 0; attempt < 2; attempt++) {
         quote = await quotedStart();
-        cost = 20n * 507_000n * quote.price;
+        cost = 20n * 3_152_000n * quote.price;
         balance = await balanceOf();
         if (balance < cost) await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - balance, gas: 21_000n, gasPrice: 1n }));
       }
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
       balance = await balanceOf();
-      const oneFulfillment = 507_000n * quote.price;
+      const oneFulfillment = 652_000n * quote.price;
       if (balance >= cost + oneFulfillment && balance > cost + fee) {
         await receipt(await poorWallet.sendTransaction({ to: poor.address, value: balance - cost - fee, gas: 21_000n, gasPrice: 1n }));
       }
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
-      const window = 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
+      const window = 652_000n * quote.price;
       balance = await balanceOf();
       assert.ok(balance >= cost && balance < cost + window);
       bucket.n = 0;
@@ -613,13 +613,13 @@ describe('worker regtest', { concurrency: 1 }, () => {
       const tx = await client.getTransaction({ hash });
       assert.equal(tx.type, 'legacy');
       if (tx.type !== 'legacy') assert.fail('fulfillment is a legacy transaction');
-      assert.equal(tx.gas, 507_000n);
+      assert.ok(tx.gas >= 652_000n, 'proof-aware verification budget');
       assert.equal(tx.gasPrice, quote.price);
       assert.equal(tx.from.toLowerCase(), poor.address.toLowerCase());
       const fulfilledReceipt = await receipt(hash);
       const after = await balanceOf();
       quote = await quotedStart();
-      cost = 20n * 507_000n * quote.price;
+      cost = 20n * 3_152_000n * quote.price;
       if (after < cost) {
         bucket.n = 0;
         const heldNonce = await nonceOf(poor.address);
@@ -632,11 +632,11 @@ describe('worker regtest', { concurrency: 1 }, () => {
       }
       for (let attempt = 0; attempt < 2; attempt++) {
         quote = await quotedStart();
-        cost = 20n * 507_000n * quote.price;
+        cost = 20n * 3_152_000n * quote.price;
         balance = await balanceOf();
         if (balance < cost) await receipt(await wallet.sendTransaction({ to: poor.address, value: cost - balance, gas: 21_000n, gasPrice: 1n }));
       }
-      assert.ok(await balanceOf() >= 20n * 507_000n * (await quotedStart()).price);
+      assert.ok(await balanceOf() >= 20n * 3_152_000n * (await quotedStart()).price);
       bucket.n = 0;
       const resumed = await worker.pollOnce();
       assert.equal(forRequest(resumed, later)?.status, 'submitted');
