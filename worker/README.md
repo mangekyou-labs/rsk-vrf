@@ -42,6 +42,15 @@ The same regtest flow populates custom Admin parameters, a second drand config, 
 
 `deploy.test.ts` runs `contracts/script/deploy.sh` against the node with a Safe stand-in contract. It checks the written deployment record against the receipts. It then requires `CheckDeployment` to fail before the stand-in accepts ownership, pass after it, and fail on an edited record. See [the deploy guide](../docs/development/deploy.md).
 
+`demo.test.ts` deploys the same way, runs the worker in the background, and runs each `demo/` script as a child process against the written record. It asserts each script's banner, transaction links and `RESULT` line:
+- dice;
+- the EOA read path;
+- the reverting consumer and the Safe fee withdrawal;
+- the noble and Go Beta recompute;
+- the five mined rejections.
+
+See [the demo walkthrough](../docs/demo.md).
+
 The committed golden traces bind chain 31, fixed addresses and timestamps. They cannot be used verbatim on a dynamic chain-33 deployment. Worker unit tests reproduce their Alpha, proof bytes and Beta exactly; a Go regression test binds the fake relay's expected-value endpoint to the same golden trace. The live test asks that independent Go endpoint to bind the actual chain, addresses, request ID and round. Worker time is injected only to exercise future-round waiting immediately; the coordinator still verifies the real BLS signature and noble proof on rskj.
 
 ## Watchdog and alert delivery
