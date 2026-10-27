@@ -118,6 +118,15 @@ jobs:
             SSM_CONFIG_PATH=/rsk-vrf/primary/ FULFILLER_KMS_KEY_ID=alias/rsk-vrf-primary-fulfiller \
             "WORKER_IMAGE=ghcr.io/mangekyou-labs/rsk-vrf-worker@sha256:$(printf '%064d' 0)" > "$RUNNER_TEMP/compose.env"
           docker compose -f compose/compose.yaml --env-file "$RUNNER_TEMP/compose.env" --profile import config --quiet
+      - name: Validate demo
+        working-directory: infra/demo
+        run: terraform init -backend=false -input=false && terraform validate
+      - name: Demo compose file
+        working-directory: infra/demo
+        run: |
+          printf '%s\n' AWS_REGION=us-east-1 LOG_GROUP=/rsk-vrf/demo SSM_CONFIG_PATH=/rsk-vrf/demo/ \
+            "WORKER_IMAGE=ghcr.io/mangekyou-labs/rsk-vrf-worker@sha256:$(printf '%064d' 0)" > "$RUNNER_TEMP/demo.env"
+          docker compose -f compose.yaml --env-file "$RUNNER_TEMP/demo.env" config --quiet
 
   worker-regtest:
     name: Worker on rskj regtest

@@ -14,6 +14,7 @@ peers); operators reach the hosts through SSM Session Manager, never SSH.
 | `modules/worker-host/` | One host: VPC, security group, EC2, data volume, KMS key, IAM, parameters, secrets, logs |
 | `modules/worker-host/cloud-init.yaml.tftpl` | Mounts `/data`, installs Docker, writes the `rsk-vrf` systemd unit |
 | `compose/compose.yaml` | rskj (`VETIVER-9.0.4`, pinned by digest) and the worker (pinned by digest) |
+| `demo/` | A separate, single-host stack for testnet demos: the worker alone on a t3.micro, a public RPC, no KMS. See [`demo/README.md`](demo/README.md) |
 
 Secret values never pass through Terraform. It creates empty Secrets Manager
 secrets and SecureString parameters holding the text `unset: ...`; the operator
