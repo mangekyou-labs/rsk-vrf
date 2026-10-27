@@ -1,0 +1,89 @@
+#cloud-config
+# Rendered by Terraform. Installs Docker, mounts the data volume at /data and
+# runs infra/compose/compose.yaml through the rsk-vrf systemd unit.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+
+write_files:
+  - path: /opt/rsk-vrf/compose.yaml
+    permissions: "0644"
+    content: |
+      ${indent(6, compose)}
+
+  - path: /opt/rsk-vrf/host.env
+    permissions: "0644"
+    content: |
+      AWS_REGION=${region}
+      LOG_GROUP=${log_group}
+      RSK_NETWORK=${rsk_network}
+      SSM_CONFIG_PATH=${parameter_path}
+      FULFILLER_KMS_KEY_ID=${fulfiller_key}
+      IMAGE_PARAMETER=${image_parameter}
+      WORKER_REPOSITORY=${image_repository}
+
+  # Formats the data volume on first boot only, then mounts it by UUID.
+  - path: /usr/local/sbin/rsk-vrf-mount-data
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      device=${data_device}
+      for _ in $(seq 1 60); do [ -e "$device" ] && break; sleep 5; done
+      [ -e "$device" ] || { echo "data volume $device not attached" >&2; exit 1; }
+      blkid "$device" >/dev/null || mkfs.ext4 -L rsk-vrf-data "$device"
+      uuid=$(blkid -s UUID -o value "$device")
+      grep -q "$uuid" /etc/fstab || echo "UUID=$uuid /data ext4 defaults,noatime,nofail 0 2" >> /etc/fstab
+      mkdir -p /data
+      mountpoint -q /data || mount /data
+      # rskj runs as uid 1001 in its image.
+      mkdir -p /data/rskj
+      chown 1001:1001 /data/rskj
+
+  # Pulls the pinned worker image digest from SSM, then (re)starts the stack.
+  # The image must be a digest of WORKER_REPOSITORY, which only Terraform sets:
+  # whoever chooses the image can sign as this host's Fulfiller.
+  - path: /usr/local/bin/rsk-vrf-up
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      cd /opt/rsk-vrf
+      . ./host.env
+      image=$(aws ssm get-parameter --region "$AWS_REGION" --name "$IMAGE_PARAMETER" --query Parameter.Value --output text)
+      digest=$${image#"$WORKER_REPOSITORY@sha256:"}
+      case "$digest" in *[!0-9a-f]* | "") hex=no ;; *) hex=yes ;; esac
+      if [ "$digest" = "$image" ] || [ "$hex" = no ] || [ $${#digest} -ne 64 ]; then
+        echo "WORKER_IMAGE is not $WORKER_REPOSITORY@sha256:<64 hex>" >&2; exit 1
+      fi
+      echo "WORKER_IMAGE=$image" > worker-image.env
+      exec docker compose --env-file host.env --env-file worker-image.env up -d --remove-orphans
+
+  - path: /etc/systemd/system/rsk-vrf.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=rsk-vrf rskj and worker
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+      RequiresMountsFor=/data
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+      ExecStart=/usr/local/bin/rsk-vrf-up
+      ExecStop=/usr/bin/docker compose --project-directory /opt/rsk-vrf --env-file /opt/rsk-vrf/host.env --env-file /opt/rsk-vrf/worker-image.env stop
+      TimeoutStartSec=15min
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - snap install aws-cli --classic
+  - /usr/local/sbin/rsk-vrf-mount-data
+  - systemctl enable --now docker
+  - systemctl daemon-reload
+  - systemctl enable --now rsk-vrf.service

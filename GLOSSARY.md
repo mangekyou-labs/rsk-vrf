@@ -48,8 +48,12 @@ _Avoid_: key swap, rekey
 **Revocation**:
 The Admin's response to a compromised Proving Key; distinct from Rotation.
 
+**Primary Worker**:
+The oracle worker that fulfills requests as soon as they are fulfillable; the Backup Worker covers what it leaves unfulfilled.
+_Avoid_: main worker, active node
+
 **Backup Worker**:
-A second oracle worker holding the same Proving Key that fulfills only requests the primary has left unfulfilled for a set grace period.
+A second oracle worker holding the same Proving Key that fulfills only requests the Primary Worker has left unfulfilled for a set grace period.
 _Avoid_: standby, failover node
 
 **Operator Funding Wallet**:

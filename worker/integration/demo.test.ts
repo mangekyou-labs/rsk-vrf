@@ -109,7 +109,7 @@ describe('demo scripts on real rskj', { concurrency: 1 }, () => {
     // The operator's worker. It never mines: on chain 33 the demo scripts mine for themselves.
     // Its clock runs ahead so the test beacon's rounds count as published.
     const worker = createWorker({
-      rpcUrl, coordinator, chain, fulfillerPrivateKey: fulfillerKey, loadProvingKey: async () => key, relayUrl, drandPin: beacon,
+      rpcUrl, coordinator, chain, fulfiller: privateKeyToAccount(fulfillerKey), loadProvingKey: async () => key, relayUrl, drandPin: beacon,
       nowSeconds: () => BigInt(Math.floor(Date.now() / 1000)) + 3_600n,
     });
     let polling = true;
