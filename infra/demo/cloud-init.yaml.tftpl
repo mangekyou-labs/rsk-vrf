@@ -1,0 +1,71 @@
+#cloud-config
+# Rendered by Terraform. Installs Docker, adds swap for the 1 GB instance and
+# runs compose.yaml through the rsk-vrf systemd unit.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+
+swap:
+  filename: /swapfile
+  size: 1G
+
+write_files:
+  - path: /opt/rsk-vrf/compose.yaml
+    permissions: "0644"
+    content: |
+      ${indent(6, compose)}
+
+  - path: /opt/rsk-vrf/host.env
+    permissions: "0644"
+    content: |
+      AWS_REGION=${region}
+      LOG_GROUP=${log_group}
+      SSM_CONFIG_PATH=${parameter_path}
+      IMAGE_PARAMETER=${image_parameter}
+      WORKER_REPOSITORY=${image_repository}
+
+  # Pulls the pinned worker image digest from SSM, then (re)starts the worker.
+  # The image must be a digest of WORKER_REPOSITORY, which only Terraform sets:
+  # whoever chooses the image can sign as this host's Fulfiller.
+  - path: /usr/local/bin/rsk-vrf-up
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      set -eu
+      cd /opt/rsk-vrf
+      . ./host.env
+      image=$(aws ssm get-parameter --region "$AWS_REGION" --name "$IMAGE_PARAMETER" --query Parameter.Value --output text)
+      digest=$${image#"$WORKER_REPOSITORY@sha256:"}
+      case "$digest" in *[!0-9a-f]* | "") hex=no ;; *) hex=yes ;; esac
+      if [ "$digest" = "$image" ] || [ "$hex" = no ] || [ $${#digest} -ne 64 ]; then
+        echo "WORKER_IMAGE is not $WORKER_REPOSITORY@sha256:<64 hex>" >&2; exit 1
+      fi
+      echo "WORKER_IMAGE=$image" > worker-image.env
+      exec docker compose --env-file host.env --env-file worker-image.env up -d --remove-orphans
+
+  - path: /etc/systemd/system/rsk-vrf.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=rsk-vrf demo worker
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+      ExecStart=/usr/local/bin/rsk-vrf-up
+      ExecStop=/usr/bin/docker compose --project-directory /opt/rsk-vrf --env-file /opt/rsk-vrf/host.env --env-file /opt/rsk-vrf/worker-image.env stop
+      TimeoutStartSec=10min
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - snap install aws-cli --classic
+  - systemctl enable --now docker
+  - systemctl daemon-reload
+  - systemctl enable --now rsk-vrf.service

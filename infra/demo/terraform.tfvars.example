@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars. Nothing here is secret: secrets are set out of band.
+# region            = "us-east-1"
+# rsk_rpc_url       = "https://public-node.testnet.rsk.co"
+# ghcr_owner        = "mangekyou-labs"
+worker_image        = "ghcr.io/mangekyou-labs/rsk-vrf-worker@sha256:<digest from the Worker image workflow>"
+coordinator_address = "0x<VRF Coordinator on chain 31>"
+
+drand_pin = {
+  public_key = "0x<word0>,0x<word1>,0x<word2>,0x<word3>"
+  genesis    = 0 # <genesis_time>
+  period     = 3
+}
+
+# keyHashes whose empty rsk-vrf/proving-key/<keyHash> secrets to create.
+proving_key_hashes = []

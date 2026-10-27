@@ -1,0 +1,25 @@
+# The demo host: the worker alone, reading Rootstock through RSK_RPC_URL.
+#
+# Terraform installs this file as /opt/rsk-vrf/compose.yaml. The host writes
+# host.env at boot, and rsk-vrf-up writes worker-image.env from SSM before
+# every start. See infra/demo/README.md.
+name: rsk-vrf
+
+services:
+  worker:
+    image: ${WORKER_IMAGE:?}
+    restart: unless-stopped
+    environment:
+      AWS_REGION: ${AWS_REGION:?}
+      SSM_CONFIG_PATH: ${SSM_CONFIG_PATH:?}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION:?}
+        awslogs-group: ${LOG_GROUP:?}
+        awslogs-create-group: "false"
+        tag: "{{.Name}}"
