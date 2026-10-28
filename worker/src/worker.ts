@@ -103,7 +103,7 @@ type Fulfillable = {
 
 function isLogCapError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : '';
-  return /limit|too many|exceed|more than|20[,_ ]?000|response size|query returned more/i.test(message);
+  return /limit|too many|exceed|more than|20[,_ ]?000|response size|query returned more|block range/i.test(message);
 }
 
 function quantity(value: unknown): bigint {
@@ -484,15 +484,26 @@ export function createWorker(config: WorkerConfig) {
     }));
   }
 
-  async function logsFor(event: AbiEvent, fromBlock: bigint, toBlock: bigint): Promise<OutcomeLog[]> {
+  /** Reads fromBlock..toBlock, halving the range while the node rejects it as too wide. */
+  async function inRanges<T>(fromBlock: bigint, toBlock: bigint, read: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>): Promise<T[]> {
     if (toBlock < fromBlock) return [];
     const span = toBlock - fromBlock + 1n;
-    if (span > MAX_LOG_SPAN) {
+    const halves = async () => {
       const mid = fromBlock + (toBlock - fromBlock) / 2n;
-      return [...await logsFor(event, fromBlock, mid), ...await logsFor(event, mid + 1n, toBlock)];
-    }
+      return [...await inRanges(fromBlock, mid, read), ...await inRanges(mid + 1n, toBlock, read)];
+    };
+    if (span > MAX_LOG_SPAN) return halves();
     try {
-      const logs = await publicClient.getLogs({ address: config.coordinator, event, fromBlock, toBlock, strict: true });
+      return await read(fromBlock, toBlock);
+    } catch (error) {
+      if (span <= 1n || !isLogCapError(error)) throw error;
+      return halves();
+    }
+  }
+
+  async function logsFor(event: AbiEvent, fromBlock: bigint, toBlock: bigint): Promise<OutcomeLog[]> {
+    return inRanges(fromBlock, toBlock, async (from, to) => {
+      const logs = await publicClient.getLogs({ address: config.coordinator, event, fromBlock: from, toBlock: to, strict: true });
       const parsed: OutcomeLog[] = [];
       for (const log of logs) {
         if (!('args' in log) || log.args == null || typeof log.args !== 'object' || !('requestId' in log.args)) continue;
@@ -503,11 +514,7 @@ export function createWorker(config: WorkerConfig) {
         parsed.push({ blockNumber: log.blockNumber, blockHash: log.blockHash, logIndex: log.logIndex, args: { requestId: requestId as Hex, fulfiller, reason } });
       }
       return parsed;
-    } catch (error) {
-      if (span <= 1n || !isLogCapError(error)) throw error;
-      const mid = fromBlock + (toBlock - fromBlock) / 2n;
-      return [...await logsFor(event, fromBlock, mid), ...await logsFor(event, mid + 1n, toBlock)];
-    }
+    });
   }
 
   /** Validate against the request's final valid block: current-state fulfill must reject after Deadline. */
@@ -586,8 +593,8 @@ export function createWorker(config: WorkerConfig) {
           logsFor(fulfilledEvent, fromBlock, latest),
           logsFor(refundedEvent, fromBlock, latest),
         ]);
-        const changes = await publicClient.getLogs({ address: config.coordinator, event: keyStateChangedEvent, fromBlock, toBlock: latest });
-        const registrations = await publicClient.getLogs({ address: config.coordinator, event: keyRegisteredEvent, fromBlock, toBlock: latest });
+        const changes = await inRanges(fromBlock, latest, (from, to) => publicClient.getLogs({ address: config.coordinator, event: keyStateChangedEvent, fromBlock: from, toBlock: to }));
+        const registrations = await inRanges(fromBlock, latest, (from, to) => publicClient.getLogs({ address: config.coordinator, event: keyRegisteredEvent, fromBlock: from, toBlock: to }));
         for (const log of [...registrations, ...changes]) {
           if (log.blockNumber == null) continue;
           await watchdog.alert('page', 'key_registry_changed', { block: log.blockNumber, transactionHash: log.transactionHash, ...log.args }, `key_registry_changed:${log.blockHash}:${log.logIndex}`);

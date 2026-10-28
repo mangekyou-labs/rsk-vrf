@@ -19,7 +19,7 @@ async function scenario(body: (s: Awaited<ReturnType<typeof setup>>) => Promise<
   const s = await setup(); try { await body(s); } finally { await new Promise<void>(resolve => s.server.close(() => resolve())); }
 }
 async function setup() {
-  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, callbackGasCap: 0, simulationGas: [] as bigint[], simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0 };
+  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, callbackGasCap: 0, simulationGas: [] as bigint[], simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0, maxLogSpan: null as bigint | null, logSpans: [] as bigint[] };
   function log(eventName: 'RandomnessRequested' | 'Fulfilled', block: bigint) {
     const topics = encodeEventTopics({ abi: coordinatorAbi, eventName, args: { requestId, requester: address, fulfiller: address } as never });
     const data = eventName === 'Fulfilled' ? encodeAbiParameters([{ type: 'bytes32' }], [zero]) : encodeAbiParameters([{ type: 'bytes32' }, { type: 'uint32' }, { type: 'uint64' }, { type: 'uint48' }, { type: 'uint48' }, { type: 'uint96' }, { type: 'uint32' }], [zero, 1, 1n, 90, 5000, 0n, 0]);
@@ -41,6 +41,9 @@ async function setup() {
         case 'eth_getTransactionByHash': result = state.hashMissing ? null : { hash: call.params[0], nonce: '0x0', blockHash: null, blockNumber: null, transactionIndex: null, from: address, to: address, gas: '0x7bc78', gasPrice: '0x6e', input: '0x', value: '0x0', type: '0x0', v: '0x25', r: zero, s: zero }; break;
         case 'eth_getLogs': {
           const filter = call.params[0];
+          const span = BigInt(filter.toBlock) - BigInt(filter.fromBlock) + 1n;
+          if (state.maxLogSpan != null && span > state.maxLogSpan) throw Error(`The maximum allowed block range is: ${state.maxLogSpan} blocks`);
+          state.logSpans.push(span);
           result = [log('RandomnessRequested', state.requestBlock), ...(state.outcome == null ? [] : [log('Fulfilled', state.outcome)])].filter(event => event.topics[0] === filter.topics[0] && BigInt(event.blockNumber) >= BigInt(filter.fromBlock) && BigInt(event.blockNumber) <= BigInt(filter.toBlock)); break;
         }
         case 'eth_call': {
@@ -152,6 +155,12 @@ it('retains original bytes when replacement simulation fails and bumps only thre
   assert.equal(state.sent.length, 3);
   state.latest = 106n; await worker.pollOnce();
   assert.equal(parseTransaction(state.sent.at(-1)!).gasPrice, 247n);
+}));
+it('splits every log read below a node block-range cap such as the Rootstock RPC API one', () => scenario(async ({ state, makeWorker }) => {
+  state.maxLogSpan = 2_000n; state.latest = 2_700n; state.requestBlock = 2_600n;
+  assert.equal((await makeWorker().pollOnce())[0]?.status, 'submitted');
+  assert.ok(state.logSpans.length >= 10, 'outcome and key registry reads are all split');
+  assert.ok(state.logSpans.every(span => span <= 2_000n));
 }));
 it('can fulfill at the exact twenty-fulfillment reserve and stops one wei below it', () => scenario(async ({ state, makeWorker }) => {
   state.balance = 6_934_399_999n;
