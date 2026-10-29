@@ -16,7 +16,17 @@ Set these first, from the repository root:
 export RPC_URL=https://public-node.testnet.rsk.co   # operator reads and sends only; the workers never use it
 RECORD=deployments/31.json
 PROXY=$(jq -r .contracts.proxy.address "$RECORD")
+LOGS_RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 ```
+
+The public node does not serve `eth_getLogs`. `pending-requests.sh` and the demo scripts read event logs, so run them with `RPC_URL="$LOGS_RPC_URL"`. Check it first:
+
+```sh
+cast logs --rpc-url "$LOGS_RPC_URL" --address "$PROXY" \
+  --from-block "$(jq .contracts.proxy.block "$RECORD")" --to-block "$(jq .contracts.proxy.block "$RECORD")"
+```
+
+Verify: the command prints the logs of the proxy creation and no error.
 
 ## 1. The Proving Key leaked
 
@@ -34,7 +44,7 @@ PROXY=$(jq -r .contracts.proxy.address "$RECORD")
    Verify:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" "$LEAKED"         # stderr: Proving Key <keyId> (<LEAKED>) is Revoked
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED"         # stderr: Proving Key <keyId> (<LEAKED>) is Revoked
    cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)'   # 0 if the leaked key was the Active Key
    ```
 
@@ -47,14 +57,14 @@ PROXY=$(jq -r .contracts.proxy.address "$RECORD")
 3. **Refund every Pending request of the Revoked key.** A request bound to a Revoked key is refundable at once. Anyone can call `timeoutRefund`. The Escrow goes back to the Requester, not to the caller. Send the refunds from the Operator Funding Wallet:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" "$LEAKED" | while read -r id _; do
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED" | while read -r id _; do
      cast send --rpc-url "$RPC_URL" --ledger "$PROXY" 'timeoutRefund(bytes32)' "$id"
    done
    ```
 
    Each line of the list must show `refundable now (KeyRevoked)`. If a line shows a different text, the key is not Revoked. Do step 1 again.
 
-   Verify: `contracts/script/pending-requests.sh "$RECORD" "$LEAKED"` prints no lines and `0 Pending` on stderr. A Requester can also refund before you. That is correct.
+   Verify: `RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED"` prints no lines and `0 Pending` on stderr. A Requester can also refund before you. That is correct.
 
 4. **Delete the leaked secret, review CloudTrail and rotate IAM.**
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Prints an Admin Safe transaction to the coordinator of a deployment record, for the
-# runbooks in docs/runbooks/. It first does an eth_call of the transaction from the Admin
-# Safe, so a transaction that would revert is never given to the signers.
+# deploy hand-off and the runbooks in docs/runbooks/. It first does an eth_call of the
+# transaction from the Admin Safe, so a transaction that would revert is never given to
+# the signers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/deployment-env.sh"
 
 usage() {
   cat >&2 <<'EOF'
 Usage: RPC_URL=<rpc> contracts/script/safe-tx.sh <deployment record> <action>
+  accept-ownership   acceptOwnership(): the Admin Safe becomes the Admin (deploy hand-off)
   register <x> <y>   registerProvingKey([x, y], <Admin Safe>): the new key becomes Active
                      and the old Active key becomes Draining
   revoke <keyHash>   revoke(keyHash): the key becomes Revoked
@@ -22,6 +24,11 @@ shift 2
 load_deployment "$deployment_file"
 
 case "$action" in
+  accept-ownership)
+    [ $# -eq 0 ] || usage
+    data=$(cast calldata 'acceptOwnership()')
+    summary="acceptOwnership, Admin $safe"
+    ;;
   register)
     [ $# -eq 2 ] || usage
     data=$(cast calldata 'registerProvingKey(uint256[2],address)' "[$1,$2]" "$safe")

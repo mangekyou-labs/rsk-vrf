@@ -25,17 +25,18 @@ This is a testnet pilot. The coordinator is not externally audited.
 
 ## 1. Failover to the Backup Worker
 
-Runbook: [outage.md, section 1](outage.md#1-the-heartbeat-is-missing). Stop the Primary Worker with a request pending, and make sure that the Backup Worker fulfills it after `GRACE_BLOCKS`.
+Runbook: [outage.md, section 8.1](outage.md#81-failover-drill). Stop the Primary Worker, make a request, and make sure that the Backup Worker fulfills it after `GRACE_BLOCKS`.
 
 Pending request: <requestId>, Deadline block <deadline>.
 
 | Step | Runbook step | Start | End | Block | Tx | Outcome | Runbook change |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Make the request | [demo.md](../demo.md) `dice` | <start> | <end> | <block> | <link> | <outcome> | <change> |
-| Stop the Primary Worker (`systemctl stop rsk-vrf`) | outage.md 1.3 (with `stop`) | <start> | <end> | <block> | none | <outcome> | <change> |
-| Heartbeat Page for `primary` | outage.md 1 | <start> | <end> | <block> | none | <outcome> | <change> |
-| Backup Worker fulfills the request | outage.md 1.1 | <start> | <end> | <block> | <link> | <outcome> | <change> |
-| Restart the Primary Worker | outage.md 1.3 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Announce the drill | outage.md 8.1.1 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Stop only the Primary Worker (`docker compose ... stop worker`) | outage.md 8.1.2 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Heartbeat Page for `primary` (expected) | outage.md 8 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Make the request | outage.md 8.1.3, [demo.md](../demo.md) `dice` | <start> | <end> | <block> | <link> | <outcome> | <change> |
+| Backup Worker fulfills the request | outage.md 8.1.3 | <start> | <end> | <block> | <link> | <outcome> | <change> |
+| Restart the Primary Worker | outage.md 8.1.4 | <start> | <end> | <block> | none | <outcome> | <change> |
 | Post the Incident Note | outage.md 1.5 | <start> | <end> | <block> | none | <link to the issue> | <change> |
 
 Blocks from the request to the fulfillment: <n> (`GRACE_BLOCKS` is 100).
