@@ -764,6 +764,14 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         vm.stopPrank();
     }
 
+    function test_RegisterProvingKeyRejectsZeroPayee() public {
+        uint256[2] memory pk = vector(0).proof.pk;
+        vm.prank(owner);
+        vm.expectRevert(VRFCoordinator.InvalidPayee.selector);
+        coordinator.registerProvingKey(pk, address(0));
+        assertEq(coordinator.activeKeyId(), 0);
+    }
+
     function test_OnlyOwnerRegistersKeysAndUpgrades() public {
         address stranger = makeAddr("stranger");
         uint256[2] memory pk = vector(0).proof.pk;

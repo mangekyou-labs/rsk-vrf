@@ -137,6 +137,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
     error FeeTransferFailed();
     error NoActiveKey();
     error InvalidProvingKey();
+    error InvalidPayee();
     error KeyAlreadyRegistered();
     error UnknownKey();
     error InvalidKeyTransition();
@@ -262,6 +263,7 @@ contract VRFCoordinator is VRF, UUPSUpgradeable, Ownable2StepUpgradeable, Reentr
         returns (uint32 keyId)
     {
         if (!_isOnCurve(publicKey)) revert InvalidProvingKey();
+        if (payee == address(0)) revert InvalidPayee();
         CoordinatorStorage storage $ = _storage();
         bytes32 keyHash = keccak256(abi.encode(publicKey));
         if ($.keyIds[keyHash] != 0) revert KeyAlreadyRegistered();

@@ -109,7 +109,7 @@ From [#19](https://github.com/mangekyou-labs/rsk-vrf/issues/19):
 - `timeoutRefund`: `UnknownRequest`, `RequestNotPending`, `NotRefundableYet`, `RefundTransferFailed`. It is `nonReentrant`.
 - `withdrawFees()`: pays the caller's full credited balance and is a no-op at zero. It is `nonReentrant`.
 - Requests: `NoActiveKey`, `IncorrectFee(expected, sent)`, `RequesterHasNoCode`.
-- Admin: `InvalidProvingKey`, `KeyAlreadyRegistered`, `UnknownKey`, `InvalidKeyTransition`, `ValueOutOfBounds(param)`.
+- Admin: `InvalidProvingKey`, `InvalidPayee`, `KeyAlreadyRegistered`, `UnknownKey`, `InvalidKeyTransition`, `ValueOutOfBounds(param)`.
 - Derive views: distinct errors for unknown, Pending and Refunded requests.
 
 ### Admin surface and parameters
@@ -132,7 +132,7 @@ All Admin functions are owner-only (the Safe) and take effect only for new reque
   - Register and activate is one step; it moves the old key to Draining.
   - `revoke(keyHash)` takes effect immediately and makes the key's pending requests refundable.
   - Retired is derived in the view: Draining and `block.number > drainingSince + MAX_TIMEOUT_BLOCKS`.
-  - The Payee is fixed when the key is registered.
+  - The Payee is fixed when the key is registered. It must not be `address(0)`.
 - No Admin function moves Escrow or Payee balances. `upgrade` is the trust boundary.
 
 ### Events
