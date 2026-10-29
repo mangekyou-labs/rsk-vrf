@@ -11,6 +11,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { coordinatorFromDeployment } from '../src/deployment.ts';
+import { EVMNET_CHAIN_HASH } from '../src/relays.ts';
 
 export const BANNER = 'Unaudited testnet pilot; do not use for value.';
 export const REGTEST = 33;
@@ -30,7 +31,7 @@ export function artifact(name: string): { abi: Abi; bytecode: Hex } {
 export const coordinatorAbi = artifact('VRFCoordinator').abi;
 
 /** The evmnet drand chain on the public relay; DRAND_RELAY_URL overrides it. */
-export const EVMNET_RELAY = 'https://api.drand.sh/04f1e9062b8a81f848fded9c12306733282b2727ecced50032187751166ec8c3';
+export const EVMNET_RELAY = `https://api.drand.sh/${EVMNET_CHAIN_HASH}`;
 
 export function drandRelay(): string {
   return (process.env.DRAND_RELAY_URL ?? EVMNET_RELAY).replace(/\/$/, '');

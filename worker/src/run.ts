@@ -8,12 +8,11 @@ import { privateKeyToAccount, type LocalAccount } from 'viem/accounts';
 import { coordinatorFromDeployment } from './deployment.ts';
 import { kmsAccount } from './kms-signer.ts';
 import { applyParameters, isPlaceholder, loadParameters } from './parameters.ts';
+import { DEFAULT_RELAYS } from './relays.ts';
 import { AwsSecretSource, EMPTY_SECRET_MESSAGE, provingKeyLoader } from './secrets.ts';
 import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
 import { runWorkerLoop } from './loop.ts';
 import { jsonLine, type WatchdogConfig } from './watchdog.ts';
-
-const SPEC_RELAYS = ['https://api.drand.sh', 'https://api2.drand.sh', 'https://api3.drand.sh'];
 
 /** A startup failure whose message names configuration only, so it is safe to print. */
 class ConfigurationError extends Error {}
@@ -47,7 +46,7 @@ function drandPin(): DrandPin {
 function relayUrls(): string[] {
   const listed = process.env.DRAND_RELAY_URLS;
   const single = process.env.DRAND_RELAY_URL;
-  const raw = listed ? listed.split(',') : single ? [single] : SPEC_RELAYS;
+  const raw = listed ? listed.split(',') : single ? [single] : DEFAULT_RELAYS;
   return raw.map(item => new URL(item.trim()).toString().replace(/\/$/, ''));
 }
 
