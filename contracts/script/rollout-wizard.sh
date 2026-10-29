@@ -205,6 +205,7 @@ finish() {
 #
 #   contracts/script/rollout-wizard.sh            run or resume the rollout
 #   contracts/script/rollout-wizard.sh --status   list the stages and which are done
+#   contracts/script/rollout-wizard.sh --list-stages   print the stage ids, in order
 #
 # Progress and every captured value live in $ROLLOUT_DIR/state.env (default .rollout-31/
 # at the repository root, ignored by git). Rerun the wizard to resume where it stopped.
@@ -230,9 +231,10 @@ REQUESTED_TOPIC=0x548fbfced1f0370ecbb6d0a49365208f8b1711725efcadc9d1650ecc6be3e3
 DEMO_SCRIPTS=(dice read-path reverting-consumer withdraw-fees recompute-beta rejections)
 GRACE_BLOCKS=100
 RETIRE_BLOCKS=2400
+OUTAGE_MIN_BLOCKS=1250   # outage.md 8.2: both workers stay stopped for at least this many blocks
 
 # Stage ids, in the order of #41. Progress is DONE_<id> in state.env.
-STEP_IDS=(rpc safe deploy verify handoff check discard commit gate drill-header failover rotation revocation outage missed final publish)
+STEP_IDS=(rpc safe deploy verify handoff check discard commit gate drill-header failover rotation revocation outage ready final missed publish)
 STEP_TITLES=(
   "Step 1: RPC of chain 31"
   "Step 1: create the Admin Safe"
@@ -248,8 +250,9 @@ STEP_TITLES=(
   "Step 3: drill, Rotation with a request pending"
   "Step 3: drill, Revocation with a request pending and its refund"
   "Step 4: outage window"
-  "Step 4: count the missed Deadlines"
+  "Step 5: CI green and the review findings fixed"
   "Step 5: final demo run"
+  "Step 4: count the missed Deadlines, after the final demo run"
   "Step 5: write the drill log"
 )
 
@@ -304,10 +307,13 @@ load_state() {
   done < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | tr -d '=' | sort -u)
 }
 
+# stop_no_input stops the wizard, to be resumed, when its input has ended.
+stop_no_input() { warn "No more input. Stopped; rerun the wizard to resume here."; exit 1; }
+
 # hold "msg" waits for Enter, and stops the wizard (to be resumed) if input has ended.
 hold() {
   printf '  %s%s%s ' "$DIM" "${1:-Press Enter to continue}" "$RESET"
-  read -r _ || { printf '\n'; warn "No more input. Stopped; rerun the wizard to resume here."; exit 1; }
+  read -r _ || { printf '\n'; stop_no_input; }
 }
 
 # run_step ID FN runs one stage, unless an earlier run finished it.
@@ -341,7 +347,7 @@ print_status() {
 ask_public() {
   local key="$1" prompt="$2" check="${3:-}"
   while :; do
-    ask "$key" "$prompt" || { warn "No more input. Stopped; rerun the wizard to resume here."; exit 1; }
+    ask "$key" "$prompt" || stop_no_input
     if looks_like_key "${!key}"; then printf -v "$key" '%s' ''; refused; continue; fi
     if [[ -n "$check" ]] && ! "$check" "${!key}"; then printf -v "$key" '%s' ''; continue; fi
     break
@@ -353,7 +359,7 @@ ask_public() {
 ask_default() {
   local key="$1" prompt="$2" default="$3"
   while :; do
-    ask "$key" "$prompt [Enter: $default]" || { warn "No more input. Stopped; rerun the wizard to resume here."; exit 1; }
+    ask "$key" "$prompt [Enter: $default]" || stop_no_input
     [[ -n "${!key}" ]] || printf -v "$key" '%s' "$default"
     if looks_like_key "${!key}"; then printf -v "$key" '%s' ''; refused; continue; fi
     break
@@ -395,12 +401,12 @@ tx_link() { printf '%s/tx/%s' "$EXPLORER" "$1"; }
 # the shape of a private key). The hash is saved as KEY, with KEY_BLOCK, only after the
 # chain shows a receipt for it.
 ask_tx() {
-  local key="$1" prompt="$2" input status hash
+  local key="$1" prompt="$2" input status hash explorer_re="${EXPLORER//./\\.}"
   while :; do
-    ask "$key" "$prompt ($EXPLORER/tx/...)" || { warn "No more input. Stopped; rerun the wizard to resume here."; exit 1; }
+    ask "$key" "$prompt ($EXPLORER/tx/...)" || stop_no_input
     input="${!key}"; printf -v "$key" '%s' ''
     if looks_like_key "$input"; then refused; note "Paste the explorer link of the transaction, not the bare hash."; continue; fi
-    if [[ "$input" =~ ^$EXPLORER/tx/(0x[0-9a-fA-F]{64})/?$ ]]; then
+    if [[ "$input" =~ ^$explorer_re/tx/(0x[0-9a-fA-F]{64})/?$ ]]; then
       hash="${BASH_REMATCH[1]}"
     elif [[ "$input" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
       hash="$input"   # the saved value from an earlier run (Enter keeps it)
@@ -480,48 +486,67 @@ need_logs_rpc() {
 
 # ── Demo scripts (run by you, in a second shell) ──────────────────────────
 
-# demo_log_ok LOG: the script ran on chain 31, printed no FAILED line and ended with RESULT.
+# demo_log_ok LOG [SINCE]: the script ran on chain 31 against the coordinator $PROXY, printed
+# no FAILED line, ended with RESULT and exited 0 (the "exit N" line that show_demo_command's
+# command appends). With SINCE (epoch seconds), the log must also be written at or after it.
 demo_log_ok() {
-  local log="$1"
+  local log="$1" since="${2:-}" lines
   [[ -s "$log" ]] || return 1
-  grep -qE '^chain 31,' "$log" || return 1
+  if [[ -n "$since" ]]; then (( $(date -r "$log" +%s) >= since )) || return 1; fi
+  grep -qiE "^chain 31, coordinator ${PROXY}([^0-9a-f]|$)" "$log" || return 1
   ! grep -qE '^FAILED' "$log" || return 1
-  [[ "$(grep -vE '^[[:space:]]*$' "$log" | tail -n1)" == RESULT\ \{* ]]
+  lines=$(grep -vE '^[[:space:]]*$' "$log" | tail -n2)
+  [[ "$(printf '%s\n' "$lines" | tail -n1)" == 'exit 0' ]] || return 1
+  [[ "$(printf '%s\n' "$lines" | head -n1)" == RESULT\ \{* ]]
 }
 
 # result_field LOG FIELD: a field of the RESULT line.
 result_field() { grep -E '^RESULT \{' "$1" | tail -n1 | sed 's/^RESULT //' | jq -r --arg f "$2" '.[$f] // empty'; }
 
-# show_demo_command NAME LOG [ENV]: the command for the second shell.
+# show_demo_command NAME LOG [ENV]: the command for the second shell. ENV (NAME=value)
+# goes before the command. The command appends the script's exit status to the log, as
+# "exit N", so the status is not lost to the pipe into tee (in bash and in zsh).
 show_demo_command() {
   say "In a second shell where DEMO_PRIVATE_KEY holds a throwaway key with faucet tRBTC"
   say "(never in this shell), from the repository root:"
-  printf '\n    %s%sRPC_URL="$LOGS_RPC_URL" npm run demo:%s --prefix worker 2>&1 | tee %q%s\n\n' \
+  printf '\n    %s{ %sRPC_URL="$LOGS_RPC_URL" npm run demo:%s --prefix worker 2>&1; echo "exit $?"; } | tee %q%s\n\n' \
     "$BOLD" "${3:+$3 }" "$1" "$2" "$RESET"
   note "LOGS_RPC_URL=$LOGS_RPC_URL. Setup is in docs/demo.md: (cd contracts && forge build), (cd worker && npm ci)."
 }
 
-# check_demo PHASE NAME: does not go on until the script's log passes.
+# check_demo PHASE NAME: does not go on until the script's log passes. A log passes only if
+# it was written in this run of PHASE (from DEMO_SINCE_<PHASE>, set when the phase's first
+# check starts) and names the coordinator of the deployment record.
 check_demo() {
-  local phase="$1" name="$2" log="$ROLLOUT_DIR/$1/demo-$2.log" extra=""
+  local phase="$1" name="$2" log="$ROLLOUT_DIR/$1/demo-$2.log" extra="" since
   mkdir -p "$ROLLOUT_DIR/$phase"
-  if demo_log_ok "$log"; then
+  [[ -n "$(state "DEMO_SINCE_$phase")" ]] || put "DEMO_SINCE_$phase" "$(date -u +%s)"
+  since=$(state "DEMO_SINCE_$phase")
+  if demo_log_ok "$log" "$since"; then
     printf '  %s✓%s demo:%s passed (%s)\n' "$GREEN" "$RESET" "$name" "$log"
     return 0
   fi
   if [[ "$name" == withdraw-fees ]]; then
     say "withdraw-fees: when the Payee is the Admin Safe, the script prints the Safe transaction"
-    say "and exits 3. Execute it in the Safe UI, then rerun with WITHDRAW_TX=<hash> into the same file."
+    say "and exits 3. Execute it in the Safe UI; the wizard then asks for its link and gives the"
+    say "command with WITHDRAW_TX, which verifies it, into the same file."
+    [[ -n "$(state WITHDRAW_TX)" ]] && extra="WITHDRAW_TX=$(state WITHDRAW_TX)"
   fi
   while :; do
     printf '\n  %sdemo:%s%s\n' "$BOLD" "$name" "$RESET"
     show_demo_command "$name" "$log" "$extra"
     hold "Press Enter when demo:$name has finished"
-    if demo_log_ok "$log"; then
+    if demo_log_ok "$log" "$since"; then
       printf '  %s✓%s demo:%s passed\n' "$GREEN" "$RESET" "$name"
       return 0
     fi
-    warn "demo:$name did not pass: $log has no RESULT line on chain 31, or it has a FAILED line."
+    if [[ "$name" == withdraw-fees && -z "$extra" ]] && grep -q 'WITHDRAW_TX=' "$log" 2>/dev/null; then
+      say "demo:withdraw-fees printed the Safe transaction. Execute it in the Safe UI."
+      ask_tx WITHDRAW_TX "Paste the explorer link of the executed Safe transaction"
+      extra="WITHDRAW_TX=$WITHDRAW_TX"
+      continue
+    fi
+    warn "demo:$name did not pass: $log is not from this run, names another coordinator, has a FAILED line, or has no RESULT line and exit 0."
     [[ -s "$log" ]] && tail -n 5 "$log" | sed 's/^/    /'
     if ! confirm "Rerun demo:$name and check again?"; then
       warn "The gate is not passed. Stopped; rerun the wizard to resume at demo:$name."
@@ -638,7 +663,7 @@ drill_row() {
       outcome=$(state "${id}_LINK") ;;
     note-choice)
       say "Whether a failover drill gets an Incident Note is not decided yet. You decide it here."
-      if confirm "Post an Incident Note for this failover drill (outage.md 1.5)?"; then
+      if confirm "Post an Incident Note for this failover drill (outage.md 8.1)?"; then
         put S1_INCIDENT_NOTE yes
         hold "Press Enter when it is posted"
         ask_public "${id}_LINK" "Paste the link to the issue:" is_link
@@ -839,7 +864,7 @@ stage_failover() {
     "Verify: the Fulfiller is the Fulfiller address of backup, at least $GRACE_BLOCKS blocks after the request."
   drill_row 1 6 none "Restart the Primary Worker" "outage.md 8.1.4" \
     "\$ $SSM --parameters 'commands=[\"systemctl restart rsk-vrf\"]'" "Verify: as in outage.md section 1, step 3."
-  drill_row 1 7 note-choice "Post the Incident Note" "outage.md 1.5"
+  drill_row 1 7 note-choice "Post the Incident Note" "outage.md 8.1"
   put S1_REQUEST_ID "$(state S1R4_REQUEST_ID)"; put S1_DEADLINE "$(state S1R4_DEADLINE)"
   put S1_BLOCKS "$(blocks_between "$(state S1R4_BLOCK)" "$(state S1R5_BLOCK)")"
 }
@@ -876,7 +901,7 @@ stage_rotation() {
     "Verify: the request is Fulfilled and its keyId is $(state S2_NEW_KEY_ID)."
   FROM_ROW=5 drill_row 2 9 fulfilled "The pending request is Fulfilled with the old key" "rotation.md 6.3"
   local retire=$(( $(state S2_NEW_KEY_BLOCK) + RETIRE_BLOCKS ))
-  drill_row 2 10 none "Delete the online secret of the Retired key" "rotation.md 7" \
+  drill_row 2 10 none "Delete the online secret of the Retired Key" "rotation.md 7" \
     "The old key is Retired $RETIRE_BLOCKS blocks after the Rotation, at block $retire (now $(block_now))." \
     "You can stop the wizard (Ctrl-C) now and rerun it then: it resumes at this row." \
     "\$ RPC_URL=\"\$LOGS_RPC_URL\" contracts/script/pending-requests.sh $RECORD $(state KEY_BEFORE_HASH)" \
@@ -905,7 +930,7 @@ stage_revocation() {
   drill_row 3 5 tx "Refund the pending request (timeoutRefund, reason KeyRevoked)" "compromise.md 1.3" \
     "From the Operator Funding Wallet, on the Ledger:" \
     "\$ cast send --rpc-url \"\$RPC_URL\" --ledger $PROXY 'timeoutRefund(bytes32)' $(state S3R1_REQUEST_ID)"
-  drill_row 3 6 none "Delete the secret of the Revoked key" "compromise.md 1.4.1" "In both regions, as in compromise.md 1.4.1."
+  drill_row 3 6 none "Delete the secret of the Revoked Key" "compromise.md 1.4.1" "In both regions, as in compromise.md 1.4.1."
   drill_row 3 7 none "CloudTrail review" "compromise.md 1.4.2" "As in compromise.md 1.4.2."
   drill_row 3 8 link "Post the Incident Note" "compromise.md 1.5" "gh issue create --label incident with the Revocation template."
   put S3_REQUEST_ID "$(state S3R1_REQUEST_ID)"; put S3_KEY_ID "$(state S3R1_KEY_ID)"; put S3_DEADLINE "$(state S3R1_DEADLINE)"
@@ -980,6 +1005,12 @@ stage_outage() {
   fi
   if ! is_done OUT7; then
     outage_begin 7 "Start the worker on both hosts again"
+    local earliest=$(( $(state OUT_WINDOW_FROM) + OUTAGE_MIN_BLOCKS ))
+    until (( $(block_now) >= earliest )); do
+      warn "Block $(block_now): the window is shorter than $OUTAGE_MIN_BLOCKS blocks. Do not restart the workers before block $earliest."
+      note "You can stop (Ctrl-C) and rerun later: the wizard resumes here."
+      hold "Press Enter to check again"
+    done
     step "systemctl restart rsk-vrf on both hosts, not more than 2,400 blocks after the request (block $(( $(state OUT_REQUEST_TX_BLOCK) + 2400 )); now $(block_now))."
     step "Verify: both checks are up, and each worker Pages missed_deadline for $(state OUT_REQUEST_ID) with a proof that is not null."
     hold "Press Enter when both workers run again"
@@ -995,8 +1026,30 @@ stage_outage() {
   fi
 }
 
+stage_ready() {
+  say "#41: the final demo run starts only when CI is green on the deployed commit and every"
+  say "review finding of severity High or above is fixed."
+  local commit; commit=$(jq -r '.commit // empty' "$RECORD_ABS")
+  commit=${commit:-${RECORD_COMMIT:-unknown}}
+  put READY_COMMIT "$commit"
+  say "Deployed commit (from $RECORD): $commit"
+  printf '\n    gh run list --repo mangekyou-labs/rsk-vrf --commit %s\n\n' "$commit"
+  if confirm "Is CI green on commit $commit?"; then put READY_CI yes; else
+    put READY_CI no
+    warn "Wait until CI is green on the deployed commit, then rerun the wizard."
+    exit 1
+  fi
+  if confirm "Is every review finding of severity High or above fixed?"; then put READY_FINDINGS yes; else
+    put READY_FINDINGS no
+    warn "Fix the High and Critical findings first, then rerun the wizard."
+    exit 1
+  fi
+  put READY_AT "$(utc_stamp)"
+}
+
 stage_missed() {
-  say "outage.md section 7: the missed-Deadline count. The target is 0 outside the announced window."
+  say "outage.md section 7: the missed-Deadline count, after the final demo run so its requests"
+  say "count too. The target is 0 outside the announced window."
   local from to
   from=$(jq -r .contracts.proxy.block "$RECORD_ABS")
   to=$(block_now)
@@ -1034,6 +1087,8 @@ stage_publish() {
 
 run_wizard() {
 
+# --list-stages prints the stage ids, one per line; rollout-drill-log.py and the tests read them.
+if [[ "${1:-}" == --list-stages ]]; then printf '%s\n' "${STEP_IDS[@]}"; return 0; fi
 refuse_key_env
 TOTAL_STAGES=${#STEP_IDS[@]}
 mkdir -p "$ROLLOUT_DIR"
@@ -1043,7 +1098,7 @@ if [[ "$RECORD" == /* ]]; then RECORD_ABS="$RECORD"; else RECORD_ABS="$REPO_ROOT
 load_state
 
 if [[ "${1:-}" == --status ]]; then print_status; return 0; fi
-[[ $# -eq 0 ]] || { echo "Usage: contracts/script/rollout-wizard.sh [--status]" >&2; exit 2; }
+[[ $# -eq 0 ]] || { echo "Usage: contracts/script/rollout-wizard.sh [--status | --list-stages]" >&2; exit 2; }
 
 banner "Chain 31 rollout (#41 steps 1 to 5)"
 note "state: $ENV_FILE (rerun to resume). Testnet pilot, not externally audited."
@@ -1063,8 +1118,9 @@ run_step failover stage_failover
 run_step rotation stage_rotation
 run_step revocation stage_revocation
 run_step outage stage_outage
-run_step missed stage_missed
+run_step ready stage_ready
 run_step final stage_final
+run_step missed stage_missed
 run_step publish stage_publish
 
 finish

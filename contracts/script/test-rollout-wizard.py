@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -26,8 +27,15 @@ PROXY = '0x' + 'bb' * 20
 SINGLETON = '0x00000000000000000000000029fcb43b46531bca003ddc8fcb67ffe91900c762'
 KEY_SHAPED = '0x' + '4c' * 32
 TX = '0x' + '7a' * 32
-STEPS = ['rpc', 'safe', 'deploy', 'verify', 'handoff', 'check', 'discard', 'commit', 'gate',
-         'drill-header', 'failover', 'rotation', 'revocation', 'outage', 'missed', 'final', 'publish']
+EXPLORER = 'https://rootstock-testnet.blockscout.com'
+# The stage ids, in order, as the wizard lists them.
+STEPS = subprocess.run(['bash', str(WIZARD), '--list-stages'], capture_output=True, text=True,
+                       check=True).stdout.split()
+
+
+def before(stage):
+    """The stages before STAGE."""
+    return STEPS[:STEPS.index(stage)]
 
 # A stub cast. It answers from stub.json in $STUB_DIR, and logs each call to calls.log.
 CAST_STUB = textwrap.dedent('''\
@@ -172,7 +180,7 @@ class RefusesKeyMaterialTest(unittest.TestCase):
 
 
 def outage_state():
-    return done_state(*STEPS[:13], 'OUT1', 'OUT2', 'OUT3') | {
+    return done_state(*before('outage'), 'OUT1', 'OUT2', 'OUT3') | {
         'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example',
         'SAFE': SAFE, 'PROXY': PROXY, 'OUT_ANNOUNCED_EPOCH': '1000000000',
     }
@@ -184,6 +192,14 @@ class TransactionLinkTest(unittest.TestCase):
         w.set_state(outage_state())
         out = w.run(answers=f'https://rootstock-testnet.blockscout.com/tx/{TX}\n')
         self.assertIn('was not saved', out.stdout)
+        self.assertNotIn('OUT_REQUEST_TX', w.state())
+
+    def test_a_link_to_another_host_is_refused(self):
+        w = WizardRun(self)
+        w.set_stub({'receipts': {TX: {'status': '1 (success)', 'blockNumber': '950'}}})
+        w.set_state(outage_state())
+        out = w.run(answers=f'https://rootstock-testnetXblockscout.com/tx/{TX}\n')
+        self.assertIn('Not a transaction link', out.stdout)
         self.assertNotIn('OUT_REQUEST_TX', w.state())
 
     def test_a_request_link_saves_the_hash_its_block_and_the_request_id_from_the_receipt(self):
@@ -225,34 +241,72 @@ class StatusAndResumeTest(unittest.TestCase):
 
     def test_a_rerun_resumes_at_the_first_stage_not_done(self):
         w = WizardRun(self)
-        w.set_state(done_state(*STEPS[:8]) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example'})
+        w.set_state(done_state(*before('gate')) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example'})
         out = w.run(answers='')
         self.assertNotIn('RPC_URL:', out.stdout)
-        self.assertIn('Stage 9/17', out.stdout)
+        self.assertIn(f'Stage {len(before("gate")) + 1}/{len(STEPS)}', out.stdout)
         self.assertIn('Step 2: gate', out.stdout)
 
 
-GOOD_LOG = 'chain 31, coordinator 0xbb\nrequest roll: https://x/tx/0x1\nok: fulfilled\nRESULT {"requestId": "0x1"}\n'
+GOOD_LOG = (f'chain 31, coordinator {PROXY} (from deployments/31.json), sender 0x01\n'
+            'request roll: https://x/tx/0x1\nok: fulfilled\nRESULT {"requestId": "0x1"}\nexit 0\n')
+DEMOS = ['dice', 'read-path', 'reverting-consumer', 'withdraw-fees', 'recompute-beta', 'rejections']
 
 
 class GateTest(unittest.TestCase):
-    def gate_run(self, logs, answers, stub=None):
+    def gate_run(self, logs, answers, stub=None, mtime=None):
         w = WizardRun(self)
         w.set_stub(stub or {})
-        w.set_state(done_state(*STEPS[:8]) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example'})
+        # The gate run started a minute ago; the logs below are written in it.
+        w.set_state(done_state(*before('gate')) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example',
+                                                   'PROXY': PROXY, 'DEMO_SINCE_gate': str(int(time.time()) - 60)})
         (w.dir / 'gate').mkdir()
         for name, text in logs.items():
-            (w.dir / 'gate' / f'demo-{name}.log').write_text(text)
+            log = w.dir / 'gate' / f'demo-{name}.log'
+            log.write_text(text)
+            if mtime is not None:
+                os.utime(log, (mtime, mtime))
         return w, w.run(answers=answers)
 
+    def test_refuses_a_demo_log_written_before_this_gate_run(self):
+        w, out = self.gate_run({n: GOOD_LOG for n in DEMOS}, answers='\nn\n', mtime=time.time() - 3600)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('DONE_gate', w.state())
+        self.assertIn('demo:dice did not pass', out.stdout)
+
+    def test_refuses_a_demo_log_of_another_coordinator(self):
+        other = GOOD_LOG.replace(PROXY, '0x' + 'cc' * 20)
+        w, out = self.gate_run({n: other for n in DEMOS}, answers='\nn\n')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('DONE_gate', w.state())
+
+    def test_refuses_a_demo_log_whose_script_exited_nonzero(self):
+        nonzero = GOOD_LOG.replace('exit 0', 'exit 1')
+        w, out = self.gate_run({n: nonzero for n in DEMOS}, answers='\nn\n')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('DONE_gate', w.state())
+
+    def test_the_demo_command_writes_the_exit_status_of_the_script_into_the_log(self):
+        w, out = self.gate_run({}, answers='\nn\n')
+        self.assertIn('echo "exit $?"; } | tee', out.stdout)
+
+    def test_after_the_safe_transaction_of_withdraw_fees_the_rerun_command_has_its_hash(self):
+        safe_tx = (f'chain 31, coordinator {PROXY} (from deployments/31.json), sender 0x01\n'
+                   'Then rerun with WITHDRAW_TX=<its transaction hash> to verify it.\nexit 3\n')
+        logs = {n: GOOD_LOG for n in DEMOS[:3]} | {'withdraw-fees': safe_tx}
+        stub = {'receipts': {TX: {'status': '1 (success)', 'blockNumber': '950'}}}
+        w, out = self.gate_run(logs, answers=f'\n{EXPLORER}/tx/{TX}\n', stub=stub)
+        self.assertEqual(w.state()['WITHDRAW_TX'], TX)
+        self.assertIn(f'WITHDRAW_TX={TX} RPC_URL="$LOGS_RPC_URL" npm run demo:withdraw-fees', out.stdout)
+        self.assertNotIn('DONE_gate', w.state())
+
     def test_passes_when_every_demo_log_ends_with_a_result_on_chain_31(self):
-        names = ['dice', 'read-path', 'reverting-consumer', 'withdraw-fees', 'recompute-beta', 'rejections']
-        w, out = self.gate_run({n: GOOD_LOG for n in names}, answers='')
+        w, out = self.gate_run({n: GOOD_LOG for n in DEMOS}, answers='')
         self.assertIn('DONE_gate', w.state())
         self.assertIn('gate passed', out.stdout)
 
     def test_refuses_to_pass_when_a_demo_failed(self):
-        failed = 'chain 31, coordinator 0xbb\nFAILED: fulfillment never came\n'
+        failed = f'chain 31, coordinator {PROXY}\nFAILED: fulfillment never came\nexit 1\n'
         w, out = self.gate_run({'dice': GOOD_LOG, 'read-path': failed}, answers='\nn\n')
         self.assertNotEqual(out.returncode, 0)
         self.assertIn('demo:read-path did not pass', out.stdout)
@@ -281,11 +335,74 @@ class GateTest(unittest.TestCase):
 
     def test_asks_for_the_logs_rpc_when_none_is_set_and_checks_it_with_cast_logs(self):
         w = WizardRun(self)
-        w.set_state(done_state(*STEPS[:8]) | {'RPC_URL': 'https://rpc.example'})
+        w.set_state(done_state(*before('gate')) | {'RPC_URL': 'https://rpc.example'})
         out = w.run(answers='https://logs.example\n')
         self.assertIn('not decided yet', out.stdout)
         self.assertEqual(w.state()['LOGS_RPC_URL'], 'https://logs.example')
         self.assertIn('logs --rpc-url https://logs.example', w.calls())
+
+
+class StageOrderTest(unittest.TestCase):
+    def test_the_confirmation_comes_after_the_outage_window_and_before_the_final_demo_run(self):
+        self.assertLess(STEPS.index('outage'), STEPS.index('ready'))
+        self.assertLess(STEPS.index('ready'), STEPS.index('final'))
+
+    def test_the_missed_deadline_count_runs_after_the_final_demo_run(self):
+        self.assertLess(STEPS.index('final'), STEPS.index('missed'))
+        self.assertEqual(STEPS[-1], 'publish')
+
+
+class ReadyTest(unittest.TestCase):
+    def ready_run(self, answers):
+        w = WizardRun(self)
+        record = json.loads(w.record.read_text()) | {'commit': 'abc1234'}
+        w.record.write_text(json.dumps(record))
+        w.set_state(done_state(*before('ready')) | {'RPC_URL': 'https://rpc.example', 'PROXY': PROXY})
+        return w, w.run(answers=answers)
+
+    def test_records_that_ci_is_green_on_the_deployed_commit_and_the_findings_are_fixed(self):
+        w, out = self.ready_run('y\ny\n')
+        state = w.state()
+        self.assertIn('abc1234', out.stdout)
+        self.assertEqual(state['READY_COMMIT'], 'abc1234')
+        self.assertEqual(state['READY_CI'], 'yes')
+        self.assertEqual(state['READY_FINDINGS'], 'yes')
+        self.assertIn('DONE_ready', state)
+
+    def test_stops_before_the_final_demo_run_when_ci_is_not_green(self):
+        w, out = self.ready_run('n\n')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(w.state()['READY_CI'], 'no')
+        self.assertNotIn('DONE_ready', w.state())
+        self.assertNotIn('final demo run, against', out.stdout)
+
+    def test_stops_when_a_high_finding_is_not_fixed(self):
+        w, out = self.ready_run('y\nn\n')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertEqual(w.state()['READY_FINDINGS'], 'no')
+        self.assertNotIn('DONE_ready', w.state())
+
+
+class OutageRestartTest(unittest.TestCase):
+    def restart_run(self, block, answers):
+        w = WizardRun(self)
+        w.set_stub({'block': block})
+        w.set_state(outage_state() | done_state('OUT4', 'OUT5', 'OUT6') |
+                    {'OUT_WINDOW_FROM': '1000', 'OUT_REQUEST_TX_BLOCK': '1001', 'OUT_REQUEST_ID': '0x' + '11' * 32})
+        return w, w.run(answers=answers)
+
+    def test_refuses_the_restart_before_1250_blocks_of_window(self):
+        w, out = self.restart_run(2249, answers='')
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn('2250', out.stdout)
+        self.assertNotIn('systemctl restart', out.stdout)
+        self.assertNotIn('DONE_OUT7', w.state())
+
+    def test_allows_the_restart_after_1250_blocks_of_window(self):
+        w, out = self.restart_run(2250, answers='\n')
+        self.assertIn('systemctl restart', out.stdout)
+        self.assertIn('DONE_OUT7', w.state())
+        self.assertEqual(w.state()['OUT_WINDOW_TO'], '2250')
 
 
 TIME = re.compile(r'^\d\d:\d\d:\d\d$')
@@ -293,7 +410,7 @@ TIME = re.compile(r'^\d\d:\d\d:\d\d$')
 
 class DrillRowTest(unittest.TestCase):
     def failover_state(self, *rows, **extra):
-        return (done_state(*STEPS[:10], *rows) |
+        return (done_state(*before('failover'), *rows) |
                 {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example', 'PROXY': PROXY} | extra)
 
     def test_times_a_row_and_records_its_block_and_outcome(self):
@@ -377,7 +494,7 @@ class DrillLogTest(unittest.TestCase):
         self.assertIn('| Deployment record | `deployments/31.json` at commit abc1234 |', text)
         self.assertIn('| Active Key before the drill | 1, keyHash 0x99 |', text)
         self.assertIn('| Announce the drill | outage.md 8.1.1 | 10:00:00 | 10:01:00 | 1042 | none | ok | none |', text)
-        self.assertIn('| Post the Incident Note | outage.md 1.5 | 11:00:00 | 11:02:00 | 1200 | none | '
+        self.assertIn('| Post the Incident Note | outage.md 8.1 | 11:00:00 | 11:02:00 | 1200 | none | '
                       'https://github.com/x/issues/9 | reworded 1.5 |', text)
         self.assertIn('Pending request: 0x11, Deadline block 5000.', text)
         self.assertIn('Blocks from the request to the fulfillment: 101 (`GRACE_BLOCKS` is 100).', text)
@@ -395,6 +512,12 @@ class DrillLogTest(unittest.TestCase):
     def test_lists_the_steps_that_did_not_pass(self):
         text = self.render({'S2R4_OUTCOME': 'backup failed check-key', 'S2R4_START': '10:00:00'})
         self.assertIn('- Steps that did not pass: 2. `check-key` on both hosts: backup failed check-key', text)
+
+    def test_records_the_confirmation_before_the_final_demo_run(self):
+        text = self.render({'READY_COMMIT': 'abc1234', 'READY_CI': 'yes', 'READY_FINDINGS': 'yes',
+                            'READY_AT': '2026-10-29T12:00:00Z'})
+        self.assertIn('CI green on the deployed commit abc1234: yes.', text)
+        self.assertIn('Every review finding of severity High or above fixed: yes.', text)
 
     def test_the_last_stage_writes_the_filled_in_drill_log(self):
         w = WizardRun(self)
