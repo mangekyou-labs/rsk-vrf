@@ -115,7 +115,15 @@ describe('runbook tools on real rskj', { concurrency: 1 }, () => {
       assert.notEqual(early.code, 0, 'a proposal the Safe cannot yet execute is refused');
       assert.match(early.output, /reverts/);
       assert.equal(early.stdout, '', 'a refused proposal prints no transaction to sign');
-      await execute(safe, { to: coordinator, value: '0', data: encodeFunctionData({ abi: ownableAbi, functionName: 'acceptOwnership' }) });
+      // The hand-off of docs/development/deploy.md, step 3.
+      const accept = await safeTx(record, 'accept-ownership');
+      assert.equal(accept.code, 0, accept.output);
+      const acceptTx = proposal(accept.stdout);
+      assert.deepEqual(acceptTx, { to: coordinator, value: '0', data: encodeFunctionData({ abi: ownableAbi, functionName: 'acceptOwnership' }) });
+      await execute(safe, acceptTx);
+      const acceptedAgain = await safeTx(record, 'accept-ownership');
+      assert.notEqual(acceptedAgain.code, 0, 'a hand-off the Safe already accepted is refused before signing');
+      assert.equal(acceptedAgain.stdout, '');
 
       const onOld = await request(coordinator, 'b1');
       const listed = await pending(record, oldKey.keyHash);
