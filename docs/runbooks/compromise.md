@@ -94,7 +94,7 @@ PROXY=$(jq -r .contracts.proxy.address "$RECORD")
      --title "Revocation of Proving Key <keyId>" --body-file revocation-note.md
    ```
 
-   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue, and the README Security status links to the `incident` label.
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue.
 
 ### Incident Note template: Revocation
 
