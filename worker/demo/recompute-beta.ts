@@ -5,13 +5,12 @@
 // then derives Beta from Gamma. With GO_VRF_URL (the Go test relay) it also has
 // Chainlink's Go verifier check the proof and compares the Go prover's proof with the
 // one the worker's noble prover sent.
-// Unaudited testnet pilot; do not use for value.
-import { concat, encodeAbiParameters, keccak256, pad, stringToHex, toHex, type Hex } from 'viem';
+// Testnet pilot, not externally audited; do not use for value.
+import { concat, type Hex } from 'viem';
 
 import { verify } from './ecvrf.ts';
+import { betaOf, keyHashOf, word } from './derive.ts';
 import { alphaOf, check, connect, decodeFulfill, drandRelay, drandSignature, main, result } from './lib.ts';
-
-const word = (n: bigint) => pad(toHex(n), { size: 32 });
 
 main(async () => {
   const demo = await connect('recompute-beta');
@@ -21,7 +20,7 @@ main(async () => {
   // The published inputs: the fulfill calldata, the request record and the drand beacon.
   const { proof, signature } = decodeFulfill((await demo.client.getTransaction({ hash: fulfillTx })).input);
   const { keyHash } = await demo.read<{ keyHash: Hex }>('getProvingKey', [request.keyId]);
-  check(keccak256(concat([word(proof.pk[0]), word(proof.pk[1])])) === keyHash, 'the proof\'s public key is the request\'s registered key');
+  check(keyHashOf(proof.pk) === keyHash, 'the proof\'s public key is the request\'s registered key');
 
   const relay = drandRelay();
   const published = await drandSignature(relay, request.targetRound, 1);
@@ -32,7 +31,7 @@ main(async () => {
   const verified = verify(proof, BigInt(alpha));
   const proofVerified = verified.valid;
   check(verified.valid, 'the proof (Gamma, c, s) verifies over the recomputed Alpha and the Proving Key\'s public key');
-  const beta = keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'bytes32' }], [keccak256(stringToHex('rsk-vrf/v1/beta')), word(verified.output)]));
+  const beta = betaOf(verified.output);
   check(beta === request.beta, `the Beta derived from Gamma, ${beta}, is the stored Beta`);
 
   let goVerified: boolean | 'skipped' = 'skipped';
