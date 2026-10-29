@@ -22,10 +22,11 @@ Each step of the rollout (#41) and where it is done:
 | 1. Verify | [3](#3-verify-chain-31-only) | `contracts/script/verify.sh` |
 | 1. Hand off, check, discard the deployer key, commit the record | [4](#4-safe-hand-off-and-check) | `contracts/script/safe-tx.sh <record> accept-ownership`, `CheckDeployment.s.sol` |
 | 2. Gate | [demo.md](../demo.md) | `npm run demo:<name> --prefix worker` |
-| 3. Drill: failover | [outage.md, section 7.1](../runbooks/outage.md#71-failover-drill) | `docker compose ... stop worker` |
+| 3. Drill: failover | [outage.md, section 8.1](../runbooks/outage.md#81-failover-drill) | `docker compose ... stop worker` |
 | 3. Drill: Rotation with a request pending | [rotation.md](../runbooks/rotation.md) | `contracts/script/safe-tx.sh <record> register` |
 | 3. Drill: Revocation with a request pending, and its refund | [compromise.md](../runbooks/compromise.md) | `contracts/script/safe-tx.sh <record> revoke`, `timeoutRefund` |
-| 4. Outage window | [outage.md, section 7.2](../runbooks/outage.md#72-outage-window) | `docker compose ... stop worker`, `timeoutRefund` |
+| 4. Outage window | [outage.md, section 8.2](../runbooks/outage.md#82-outage-window) | `docker compose ... stop worker`, `timeoutRefund` |
+| 4. Count the missed Deadlines | [outage.md, section 7](../runbooks/outage.md#7-count-the-missed-deadlines) | `npm run demo:missed-deadlines --prefix worker` |
 | 5. Final demo run | [demo.md](../demo.md) | `npm run demo:<name> --prefix worker` |
 
 ## 1. Create the Admin Safe

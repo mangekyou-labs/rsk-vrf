@@ -63,9 +63,11 @@ Run each one from `worker/` with `npm run demo:<name>`.
 
    **Timing.** The script fulfills request A first, then sends all five transactions in the first block where request B is Fulfillable, so they land before the operator fulfills B. On regtest the script mines that block itself. On a live chain the worker may fulfill B first. The script detects this: B is no longer Pending before it broadcasts, or a rejection lands in or after B's fulfill block. It then stops with "the operator's worker fulfilled B before the rejections landed ... rerun rejections". Rerun it.
 
+7. **`missed-deadlines`** reports the missed-Deadline count for the walkthrough. It reads the record and takes a block range, `<record> <fromBlock> <toBlock>`, and an `--exclude <from>-<to>` for each announced outage window. It prints each request with a Deadline in the range that is still Pending after its Deadline or was refunded after it, as `<requestId> deadline <block> <Pending|Refunded>`, then the count. The rule is the worker's `missed_deadline` rule, so a refund after a Revocation is not counted. The target is 0 outside the announced window. See [outage.md, section 7](runbooks/outage.md#7-count-the-missed-deadlines). It sends no transaction and needs no `DEMO_PRIVATE_KEY`. `worker/integration/runbooks.test.ts` runs it on regtest, not `demo.test.ts`.
+
 ## Timeout Refund
 
-No script covers the timeout Refund, because a request is refunded only if no worker fulfills it before its Deadline (1,200 blocks). The outage window of the rollout does this scenario with `cast`: a demo request with both workers stopped, `timeoutRefund` after the Deadline, and the `missed_deadline` Page with the withheld proof. See [outage.md, section 7.2](runbooks/outage.md#72-outage-window). The Revocation drill also refunds a request, after a Revocation and before its Deadline ([compromise.md](runbooks/compromise.md), section 1).
+No script covers the timeout Refund, because a request is refunded only if no worker fulfills it before its Deadline (1,200 blocks). The outage window of the rollout does this scenario with `cast`: a demo request with both workers stopped, `timeoutRefund` after the Deadline, and the `missed_deadline` Page with the withheld proof. See [outage.md, section 8.2](runbooks/outage.md#82-outage-window). The Revocation drill also refunds a request, after a Revocation and before its Deadline ([compromise.md](runbooks/compromise.md), section 1).
 
 ## The noble and Go cross-check
 
@@ -78,3 +80,37 @@ The Go relay proves with the public test key and signs with the public test dran
 ## On regtest
 
 `worker/integration/demo.test.ts` runs every script against rskj regtest, as part of `npm run test:integration`. It deploys with `deploy.sh`, and uses a Safe stand-in as the Admin and Payee. It runs the worker in the background and asserts each script's `RESULT` line, including the Safe withdrawal flow. CI runs it in the "Worker on rskj regtest" job; see [the worker README](../worker/README.md#offline-full-loop) to run it locally.
+
+## Results
+
+Fill in this section after the final demo run on chain 31, against the Active Key after the drill Rotation. Copy each link from the script output. Do not fill in a value that a script did not print.
+
+Testnet pilot, not externally audited; do not use for value.
+
+| Field | Value |
+| --- | --- |
+| Date (UTC) | <date> |
+| Coordinator (proxy) | <explorer link> |
+| Active Key | <keyId>, keyHash <keyHash> |
+| Drill log | <link to the drill log, see [runbooks/drill-log.md](runbooks/drill-log.md)> |
+
+| Scenario | Script | What the link shows | Explorer link |
+| --- | --- | --- | --- |
+| On-chain verification | `dice` | The fulfill transaction: the coordinator verifies the proof and stores Beta | <explorer link> |
+| Deterministic output | `recompute-beta` | The fulfill transaction whose Beta the script recomputes (`proofVerified: true`) | <explorer link> |
+| Callback path | `dice` | The fulfill transaction that emits `Rolled` | <explorer link> |
+| Read path | `read-path` | The fulfill transaction of the request that the script reads with `deriveRandomBytes` | <explorer link> |
+| Fee settlement: fee credited | `reverting-consumer` | The fulfill transaction that emits `CallbackFailed` and credits the fee to the Payee | <explorer link> |
+| Fee settlement: fees withdrawn | `withdraw-fees` | The transaction that emits `FeesWithdrawn` | <explorer link> |
+| Timeout Refund | `timeoutRefund` after the outage window | The refund transaction (see the outage Incident Note) | <explorer link> |
+| Rejection: invalid, corrupted gamma | `rejections` | Reverted with `gamma is not on curve` | <explorer link> |
+| Rejection: invalid, corrupted s | `rejections` | Reverted with `addr(c*pk+s*g)!=_uWitness` | <explorer link> |
+| Rejection: mismatched, A's proof on B | `rejections` | Reverted with `Second mul check failed` | <explorer link> |
+| Rejection: mismatched, wrong drand round | `rejections` | Reverted with `InvalidDrandSignature` | <explorer link> |
+| Rejection: repeated, on Fulfilled A | `rejections` | Reverted with `RequestNotPending(2)` | <explorer link> |
+
+`rejections` reported `isolated: <true|false>` (see "Isolation" above).
+
+Missed Deadline count outside the announced outage window, from `missed-deadlines <record> <fromBlock> <toBlock> --exclude <window>`: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
+
+Outage window Incident Note: <link to the issue>.

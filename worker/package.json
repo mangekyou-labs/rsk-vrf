@@ -20,7 +20,8 @@
     "demo:withdraw-fees": "node demo/withdraw-fees.ts",
     "demo:recompute-beta": "node demo/recompute-beta.ts",
     "demo:rejections": "node demo/rejections.ts",
-    "demo:check-withheld-proof": "node demo/check-withheld-proof.ts"
+    "demo:check-withheld-proof": "node demo/check-withheld-proof.ts",
+    "demo:missed-deadlines": "node demo/missed-deadlines.ts"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1156.0",
