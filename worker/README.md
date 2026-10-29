@@ -6,7 +6,7 @@ Node 24+, `npm ci`, `npm run typecheck`, `npm test`.
 
 - `RSK_RPC_URL`: Rootstock JSON-RPC endpoint.
 - `COORDINATOR_ADDRESS`: deployed coordinator proxy. Alternatively, `COORDINATOR_DEPLOYMENT_FILE` names a `deployments/<chainId>.json` record from `contracts/script/deploy.sh`, and the worker reads the proxy address from it. The record's `chainId` must match the RPC's. Set one or the other, not both.
-- `DRAND_RELAY_URLS`: comma-separated relay base URLs tried in order. The first well-formed `/public/<round>` wins. `DRAND_RELAY_URL` sets one relay. With neither set, the process uses `https://api.drand.sh`, `https://api2.drand.sh`, and `https://api3.drand.sh`.
+- `DRAND_RELAY_URLS`: comma-separated relay base URLs tried in order. The first well-formed `/public/<round>` wins. `DRAND_RELAY_URL` sets one relay. A relay URL must include the chain hash, as in `https://api.drand.sh/<evmnet chain hash>`; a bare host serves drand's default chain. With neither set, the process uses the evmnet chain on `api.drand.sh`, `api2.drand.sh` and `api3.drand.sh` (`src/relays.ts`).
 - `DRAND_PIN_PUBLIC_KEY`, `DRAND_PIN_GENESIS`, `DRAND_PIN_PERIOD`: required pin of the frozen beacon. A mismatch is reported once and that config is not served.
 - `GRACE_BLOCKS`: blocks after the request's confirmations. Unset or empty is `0` (primary). A backup uses `100`.
 - `FULFILLER_KMS_KEY_ID`: the Fulfiller's AWS KMS key (id, ARN or alias), an `ECC_SECG_P256K1` signing key. The Fulfiller EOA is the key's address; the worker signs through `kms:Sign` and normalises each signature to low s. Production hosts use this.
