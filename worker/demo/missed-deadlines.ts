@@ -2,14 +2,14 @@
 // is in fromBlock..toBlock and that, at the latest block, are still Pending past it or
 // were refunded on the Deadline branch. A Revocation Refund is not a miss. The rule is
 // the worker's (deadlineMiss in src/worker.ts), so the count matches its missed_deadline
-// pages. Each --exclude <from>-<to> drops the requests whose Deadline is in that
+// Pages. Each --exclude <from>-<to> drops the requests whose Deadline is in that
 // announced window. Prints one line per miss, the count, and a RESULT line.
 // Usage: RPC_URL=<rpc> node demo/missed-deadlines.ts <deployment record> <fromBlock> <toBlock> [--exclude <from>-<to>]...
 // LOG_BLOCK_SPAN (default 5000) is the block range of each log read.
 // Testnet pilot, not externally audited; do not use for value.
 import { readFileSync } from 'node:fs';
 
-import { createPublicClient, http, parseAbiItem, type Hex } from 'viem';
+import { createPublicClient, http, type Hex } from 'viem';
 
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { coordinatorFromDeployment } from '../src/deployment.ts';
@@ -17,8 +17,6 @@ import { deadlineMiss } from '../src/worker.ts';
 import { BANNER, main, result } from './lib.ts';
 
 const USAGE = 'Usage: RPC_URL=<rpc> node demo/missed-deadlines.ts <deployment record> <fromBlock> <toBlock> [--exclude <from>-<to>]...';
-const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
-const refundedEvent = parseAbiItem('event Refunded(bytes32 indexed requestId, uint8 reason)');
 
 function block(text: string | undefined): bigint {
   if (!text || !/^\d+$/.test(text)) throw new Error(USAGE);
@@ -62,10 +60,10 @@ main(async () => {
   }
   // A request is made before its Deadline, so none made after toBlock has one in the range.
   const requested = await logs(
-    (from, to) => client.getLogs({ address: coordinator, event: requestedEvent, fromBlock: from, toBlock: to, strict: true }),
+    (from, to) => client.getContractEvents({ address: coordinator, abi: coordinatorAbi, eventName: 'RandomnessRequested', fromBlock: from, toBlock: to, strict: true }),
     toBlock < latest ? toBlock : latest,
   );
-  const refunds = await logs((from, to) => client.getLogs({ address: coordinator, event: refundedEvent, fromBlock: from, toBlock: to, strict: true }), latest);
+  const refunds = await logs((from, to) => client.getContractEvents({ address: coordinator, abi: coordinatorAbi, eventName: 'Refunded', fromBlock: from, toBlock: to, strict: true }), latest);
   const refundReasons = new Map(refunds.map(log => [log.args.requestId, log.args.reason]));
 
   const missed: { requestId: Hex; deadline: number; outcome: string }[] = [];
