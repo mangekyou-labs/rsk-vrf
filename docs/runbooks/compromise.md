@@ -16,7 +16,17 @@ Set these first, from the repository root:
 export RPC_URL=https://public-node.testnet.rsk.co   # operator reads and sends only; the workers never use it
 RECORD=deployments/31.json
 PROXY=$(jq -r .contracts.proxy.address "$RECORD")
+LOGS_RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 ```
+
+The public node does not serve `eth_getLogs`. `pending-requests.sh` and the demo scripts read event logs, so run them with `RPC_URL="$LOGS_RPC_URL"`. Check it first:
+
+```sh
+cast logs --rpc-url "$LOGS_RPC_URL" --address "$PROXY" \
+  --from-block "$(jq .contracts.proxy.block "$RECORD")" --to-block "$(jq .contracts.proxy.block "$RECORD")"
+```
+
+Verify: the command prints the logs of the proxy creation and no error.
 
 ## 1. The Proving Key leaked
 
@@ -34,7 +44,7 @@ PROXY=$(jq -r .contracts.proxy.address "$RECORD")
    Verify:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" "$LEAKED"         # stderr: Proving Key <keyId> (<LEAKED>) is Revoked
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED"         # stderr: Proving Key <keyId> (<LEAKED>) is Revoked
    cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)'   # 0 if the leaked key was the Active Key
    ```
 
@@ -47,14 +57,14 @@ PROXY=$(jq -r .contracts.proxy.address "$RECORD")
 3. **Refund every Pending request of the Revoked key.** A request bound to a Revoked key is refundable at once. Anyone can call `timeoutRefund`. The Escrow goes back to the Requester, not to the caller. Send the refunds from the Operator Funding Wallet:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" "$LEAKED" | while read -r id _; do
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED" | while read -r id _; do
      cast send --rpc-url "$RPC_URL" --ledger "$PROXY" 'timeoutRefund(bytes32)' "$id"
    done
    ```
 
    Each line of the list must show `refundable now (KeyRevoked)`. If a line shows a different text, the key is not Revoked. Do step 1 again.
 
-   Verify: `contracts/script/pending-requests.sh "$RECORD" "$LEAKED"` prints no lines and `0 Pending` on stderr. A Requester can also refund before you. That is correct.
+   Verify: `RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$LEAKED"` prints no lines and `0 Pending` on stderr. A Requester can also refund before you. That is correct.
 
 4. **Delete the leaked secret, review CloudTrail and rotate IAM.**
 
@@ -262,6 +272,6 @@ On <date, UTC> the device of one Admin Safe signer (<old signer address>) was lo
   - An unknown keyHash is an error, not an empty list.
 - By hand on rskj regtest, against a deployment from `deploy.sh`: the `revoke` transaction from `safe-tx.sh`, `activeKeyId()` after the Revocation of the Active Key (it printed `0`), and the refund loop of step 3 with `cast send` (with a test key in place of `--ledger`). After the loop, the request status was `3` (Refunded) and the list showed `0 Pending`.
 - `worker/integration/regtest.test.ts` ("worker regtest: key rotation and revocation") covers the worker side: after the Revocation the worker stops, and the Pending request is refunded before its Deadline. `worker/integration/watchdog.test.ts` covers the `key_registry_changed` and `foreign_fulfillment` Pages, and that a refund after a Revocation is not a missed Deadline.
-- Dry run only (no AWS account, Terraform, `age` or Safe UI on the walkthrough machine): section 1, steps 4 and 5; all of section 2; all of section 3.
+- Dry run only (no AWS account, Terraform, `age` or Safe UI on the walkthrough machine): section 1, steps 4 and 5; all of section 2; all of section 3. Do section 1 on testnet at the pre-demo drill, log each step in [drill-log.md](drill-log.md), and correct this runbook.
 - Not confirmed: the Terraform steps of section 2, step 3 (`terraform state rm` of the old key, then a new key and the alias moved). Do them in a test account before they are necessary, and correct this runbook.
 - Fixes folded in: the refund loop reads the list from `pending-requests.sh`, which shows if a request is refundable now. `safe-tx.sh` refuses a `revoke` for a key that is not registered or not Active or Draining.

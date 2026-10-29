@@ -12,7 +12,17 @@ Set these first, from the repository root:
 export RPC_URL=https://public-node.testnet.rsk.co   # operator reads and sends only; the workers never use it
 RECORD=deployments/31.json
 PROXY=$(jq -r .contracts.proxy.address "$RECORD")
+LOGS_RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 ```
+
+The public node does not serve `eth_getLogs`. `pending-requests.sh` and the demo scripts read event logs, so run them with `RPC_URL="$LOGS_RPC_URL"`. Check it first:
+
+```sh
+cast logs --rpc-url "$LOGS_RPC_URL" --address "$PROXY" \
+  --from-block "$(jq .contracts.proxy.block "$RECORD")" --to-block "$(jq .contracts.proxy.block "$RECORD")"
+```
+
+Verify: the command prints the logs of the proxy creation and no error.
 
 The hosts are `primary` (eu-central-1) and `backup` (us-east-1). `terraform output hosts` (in `infra/`) gives the `instance_id` and the Fulfiller address of each host. Read the worker log with the operator role:
 
@@ -35,6 +45,8 @@ aws logs tail /rsk-vrf/<host> --region <region> --since 30m
 | `foreign_fulfillment` | Page | [compromise.md](compromise.md), section 1 |
 | `key_registry_changed` | Page | [6](#6-other-pages) |
 | `missing_proving_key`, `drand_config_mismatch` | Page | [6](#6-other-pages) |
+
+The planned drills of the rollout (the failover drill and the outage window) are in [section 8](#8-planned-drills).
 
 ## 1. The heartbeat is missing
 
@@ -209,7 +221,7 @@ Do not send a Refund because of a drand stall. The operator does not trigger Ref
 3. **If all relays are down, or the latest round does not increase, drand stalls.** Wait. Read the drand status page and the drand channels for news. Read the Pending requests and their Deadlines:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" <keyHash of the Active Key>
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" <keyHash of the Active Key>
    ```
 
    Verify: each request is fulfilled when the round is available, or it gets to its Deadline. A request that gets to its Deadline is [section 5](#5-a-request-missed-its-deadline).
@@ -282,6 +294,8 @@ Post the Incident Note **not more than 24 hours after the Deadline**.
 
    If `proof` was `null`, post the note now without the proof, and add the proof when the worker has it.
 
+   For a planned outage window (both workers stopped on purpose, announced in advance), do steps 1 and 2 for each request of the window, skip step 3, and post one note for all of them. Use the [planned outage window template](#incident-note-template-planned-outage-window) and the title `Planned outage window: <start block> to <end block>`.
+
    Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue, and its time is less than 24 hours after the Deadline.
 
 ### Incident Note template: missed Deadline
@@ -318,11 +332,55 @@ The script reads the request and the Proving Key from the chain and the drand si
 <Change, so that this does not occur again.>
 ````
 
+### Incident Note template: planned outage window
+
+````markdown
+## What happened
+
+From block <start block> to block <end block> (<time, UTC> to <time, UTC>), both workers were stopped on purpose. We announced the window in advance: <link to the announcement>. Only demo requests were in flight.
+
+These requests missed their Deadline. Each one was refunded with `timeoutRefund`, and the `missed_deadline` Page for each one was expected and acknowledged.
+
+| requestId | Deadline block | Refund transaction |
+| --- | --- | --- |
+| <requestId> | <deadline> | <explorer link> |
+
+<No request outside the window missed its Deadline. | List each one outside the window and link its note.>
+
+## Withheld proofs
+
+The worker had these outputs. They were not sent on chain.
+
+### Request <requestId>
+
+- keyHash: <keyHash> (Proving Key <keyId>)
+- Beta: <beta>
+
+```json
+<the `proof` object from missed-<requestId>.json>
+```
+
+<Repeat for each request of the window.>
+
+Check each proof yourself, from a clone of the repository (Node 24 or later). Save the `proof` object as `proof.json`, then:
+
+```sh
+npm ci --prefix worker
+RPC_URL=https://public-node.testnet.rsk.co npm run demo:check-withheld-proof --prefix worker -- "$PWD/proof.json"
+```
+
+The script reads the request and the Proving Key from the chain and the drand signature from the relay. It ends with `RESULT {"valid":true,...}`.
+
+## What we changed
+
+<Nothing, because the window was planned. | Changes to this runbook from the window.>
+````
+
 ## 6. Other Pages
 
 1. **`key_registry_changed`**: a `KeyRegistered` or `KeyStateChanged` event. It is expected only after an Admin Safe transaction that you know about (a Rotation or a Revocation). If you do not know the transaction, look at it in the Admin Safe history (`transactionHash` is in the Page). If the Admin Safe did not plan it, treat it as a compromise of the Admin Safe: use [compromise.md](compromise.md), section 3, step 2.
 
-   Verify: the transaction is in the Admin Safe history and has two known signers, and `cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint256)'` prints the keyId that you expect.
+   Verify: the transaction is in the Admin Safe history and has two known signers, and `cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)'` prints the keyId that you expect.
 
 2. **`missing_proving_key`**: a request is bound to a key that the worker does not hold. Do [rotation.md](rotation.md), step 4 (`check-key`), on that host. If the secret does not load, put it again from the offline backup (rotation.md, step 3.2), then restart the host.
 
@@ -357,6 +415,131 @@ At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause
 <Change, so that this does not occur again.>
 ```
 
+## 7. Count the missed Deadlines
+
+The missed-Deadline count is reported, with a target of 0 outside an announced outage window. Count it for a block range, for example the blocks of the pilot:
+
+```sh
+RPC_URL="$LOGS_RPC_URL" npm run demo:missed-deadlines --prefix worker -- "$PWD/$RECORD" <fromBlock> <toBlock> \
+  --exclude <first block of the outage window>-<last block of the outage window>
+```
+
+The script counts each request with a Deadline in the range that the workers did not fulfill: it is still Pending after its Deadline, or it was refunded after its Deadline. It uses the same rule as the `missed_deadline` Page, so a refund after a Revocation is not counted. Each `--exclude` removes the requests with a Deadline in that window. You can give `--exclude` more than one time.
+
+Verify: the script prints one line `<requestId> deadline <block> <Pending|Refunded>` for each missed Deadline, then `<count> missed Deadline in blocks <fromBlock>..<toBlock>`, then a `RESULT` line. Each missed Deadline outside the excluded windows has an Incident Note from [section 5](#5-a-request-missed-its-deadline).
+
+## 8. Planned drills
+
+These are the planned outages of the rollout (#41, steps 3 and 4). Do them only with demo requests in flight. Use a funded throwaway key for the requests (see [docs/demo.md](../demo.md)):
+
+```sh
+DEMO=0x...   # address of the throwaway key
+FEE=$(cast call --rpc-url "$RPC_URL" "$PROXY" 'fee()(uint96)' | cut -d' ' -f1)
+```
+
+To stop only the worker of a host, and keep its rskj node in sync, use the host-access role:
+
+```sh
+aws ssm send-command --region <region> --instance-ids <instance_id> --document-name AWS-RunShellScript \
+  --parameters 'commands=["cd /opt/rsk-vrf && docker compose --env-file host.env --env-file worker-image.env stop worker"]'
+```
+
+Do not use `systemctl stop rsk-vrf`. It stops rskj too. To start the worker again, use `systemctl restart rsk-vrf`, as in [section 1](#1-the-heartbeat-is-missing), step 3.
+
+A stopped worker sends no heartbeat, so its healthchecks.io check Pages after about 5 minutes. In a drill this Page is expected. Acknowledge it, and do not do section 1.
+
+### 8.1 Failover drill
+
+1. **Announce the drill in the Warn channel.** Post this text in the chat webhook channel:
+
+   ```text
+   Failover drill starts now. The primary worker stops. Expect a healthchecks.io Page for primary.
+   ```
+
+   Verify: the message is in the channel.
+
+2. **Stop the worker on `primary`** (eu-central-1), with the command above.
+
+   Verify: `aws logs tail /rsk-vrf/primary --region eu-central-1 --since 5m --filter-pattern poll_result` shows no new lines, and the primary check in healthchecks.io goes down.
+
+3. **Make a test request with the dice demo.**
+
+   ```sh
+   RPC_URL="$LOGS_RPC_URL" DEMO_PRIVATE_KEY=0x... npm run demo:dice --prefix worker
+   ```
+
+   Verify: the script ends with a `RESULT` line. Take `requestTx` and `fulfillTx` from it:
+
+   ```sh
+   cast tx      --rpc-url "$RPC_URL" <fulfillTx> from          # the Fulfiller address of backup
+   cast receipt --rpc-url "$RPC_URL" <requestTx> blockNumber
+   cast receipt --rpc-url "$RPC_URL" <fulfillTx> blockNumber   # at least 100 blocks later (GRACE_BLOCKS)
+   ```
+
+4. **Start the worker on `primary` again.**
+
+   ```sh
+   aws ssm send-command --region eu-central-1 --instance-ids <instance_id> \
+     --document-name AWS-RunShellScript --parameters 'commands=["systemctl restart rsk-vrf"]'
+   ```
+
+   Verify: as in section 1, step 3. Write the times of steps 2 to 4 and the two block numbers in [drill-log.md](drill-log.md), section 1.
+
+### 8.2 Outage window
+
+This drill makes a request miss its Deadline on purpose. It checks that the `missed_deadline` Page fires and that the Incident Note of [section 5](#5-a-request-missed-its-deadline) can publish the withheld proof. The Deadline is 1,200 blocks after the request, so the window is at least 1,250 blocks (about 10 hours on testnet).
+
+1. **Announce the window in advance.** At least 24 hours before, open a public issue:
+
+   ```sh
+   gh issue create --repo mangekyou-labs/rsk-vrf \
+     --title "Planned outage window: <date, UTC>" --body "From <time, UTC> both workers stop for at least 1,250 blocks. Do not make requests in this time. The demo request of the window will miss its Deadline and be refunded."
+   ```
+
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --search "Planned outage window" --limit 1` shows the issue.
+
+2. **Make sure that only demo requests are Pending.**
+
+   ```sh
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" <keyHash of the Active Key>
+   ```
+
+   Verify: stdout has no lines (`0 Pending` on stderr), or each listed request is from `$DEMO`. If another request is Pending, wait until it is fulfilled.
+
+3. **Stop the worker on both hosts**, with the command above, for `primary` (eu-central-1) and `backup` (us-east-1). Post `Outage window starts now. Expect healthchecks.io Pages for both hosts.` in the Warn channel.
+
+   Verify: both checks in healthchecks.io go down, and neither log shows new `poll_result` lines.
+
+4. **Make the demo request.** Read its requestId first, then send it:
+
+   ```sh
+   TAG=$(cast format-bytes32-string outage-window)
+   cast call --rpc-url "$RPC_URL" --from "$DEMO" --value "$FEE" "$PROXY" 'request(bytes32)(bytes32)' "$TAG"   # prints <requestId>
+   cast send --rpc-url "$RPC_URL" --private-key 0x... "$PROXY" 'request(bytes32)' "$TAG" --value "$FEE"
+   ```
+
+   Verify: the second field of `getRequest(<requestId>)` (as in [rotation.md](rotation.md), step 6.2) is `1` (Pending). The eighth field is the Deadline. Write it down.
+
+5. **Wait until the block is past the Deadline.**
+
+   Verify: `cast block-number --rpc-url "$RPC_URL"` is more than the Deadline.
+
+6. **Refund the request.**
+
+   ```sh
+   cast send --rpc-url "$RPC_URL" --private-key 0x... "$PROXY" 'timeoutRefund(bytes32)' <requestId>
+   ```
+
+   Verify: the second field of `getRequest(<requestId>)` is `3` (Refunded).
+
+7. **Start the worker on both hosts again**, with `systemctl restart rsk-vrf`, as in section 1, step 3. Do this not more than 2,400 blocks after the request. The workers find the refund only in the last 2,500 blocks.
+
+   Verify: both checks in healthchecks.io are up again, and each worker sends a `missed_deadline` Page for `<requestId>` with a `proof` that is not `null`.
+
+8. **Do [section 5](#5-a-request-missed-its-deadline) for the request.** In the note, the cause is the planned outage window, and link the announcement.
+
+   Verify: as in section 5. Close the announcement issue with a link to the note. Then count the missed Deadlines with [section 7](#7-count-the-missed-deadlines), and give the blocks of the window to `--exclude`.
+
 ## Walkthrough record
 
 **2026-10-29, rskj regtest, unit tests and a dry run.**
@@ -365,7 +548,12 @@ At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause
   - `check-withheld-proof.ts` accepts the Page as a file and prints `RESULT {"valid":true,...}`.
   - It refuses a proof with a changed Beta.
   - It also accepts only the `proof` object, and it refuses a changed proof.
+- `worker/integration/runbooks.test.ts` ("runbook tools on real rskj", `missed-deadlines`) does section 7 on rskj regtest. Of four requests, one is fulfilled, one stays Pending after its Deadline, one is refunded after its Deadline, and one has its Deadline after the range. Results:
+  - `missed-deadlines.ts` counts 2: the Pending request and the refunded request.
+  - With `--exclude` over the Deadline of the refunded request, it counts 1.
+  - It refuses a range that ends before it starts.
 - `worker/integration/watchdog.test.ts` covers the alerts of each section: `low_balance`, `top_up_balance`, `drand_stall`, `pending_age`, `node_unhealthy`, `rpc_unhealthy`, `missed_deadline` with the proof in the Page and the JSON log line, and no Page for a refund after a Revocation.
 - `worker/integration/watchdog.test.ts` ("stops the healthchecks.io heartbeat when the node stops answering") and `worker/test/loop.test.ts` cover the Dead-man's Switch: a heartbeat only after a completed poll, and no heartbeat after a failed or stalled poll. `worker/integration/regtest.test.ts` covers the Backup Worker with `GRACE_BLOCKS` 100 and a drand stall with no refund.
-- Dry run only (no AWS account, Terraform, healthchecks.io or live drand stall on the walkthrough machine): sections 1 to 4 and section 6. The commands come from [infra/README.md](../../infra/README.md) and the alert names from `worker/src/worker.ts`. Do them on testnet at the pre-demo drill and correct this runbook.
+- Dry run only (no AWS account, Terraform, healthchecks.io or live drand stall on the walkthrough machine): sections 1 to 4 and section 6. The commands come from [infra/README.md](../../infra/README.md) and the alert names from `worker/src/worker.ts`. Do them on testnet at the pre-demo drill, log each step in [drill-log.md](drill-log.md), and correct this runbook.
+- Dry run only: section 8 (the failover drill and the outage window). `runbooks.test.ts` covers the `missed_deadline` Page with the proof on regtest, but not the stop and restart of the hosts. Do section 8 on testnet as steps 3 and 4 of the rollout, log each step in [drill-log.md](drill-log.md), and correct this runbook.
 - Fixes folded in: the `demo:check-withheld-proof` script accepts the Page, the log line, or only the `proof` object.

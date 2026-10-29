@@ -22,7 +22,17 @@ export RPC_URL=https://public-node.testnet.rsk.co   # operator reads and sends o
 RECORD=deployments/31.json
 PROXY=$(jq -r .contracts.proxy.address "$RECORD")
 OLD=0x...                                            # keyHash of the Active Key now
+LOGS_RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 ```
+
+The public node does not serve `eth_getLogs`. `pending-requests.sh` and the demo scripts read event logs, so run them with `RPC_URL="$LOGS_RPC_URL"`. Check it first:
+
+```sh
+cast logs --rpc-url "$LOGS_RPC_URL" --address "$PROXY" \
+  --from-block "$(jq .contracts.proxy.block "$RECORD")" --to-block "$(jq .contracts.proxy.block "$RECORD")"
+```
+
+Verify: the command prints the logs of the proxy creation and no error.
 
 The deploy and hand-off of the coordinator are in [docs/development/deploy.md](../development/deploy.md).
 
@@ -109,8 +119,8 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    Verify:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" <NEW>   # stderr: Proving Key <newId> (<NEW>) is Active
-   contracts/script/pending-requests.sh "$RECORD" "$OLD"  # stderr: Proving Key <oldId> (<OLD>) is Draining
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" <NEW>   # stderr: Proving Key <newId> (<NEW>) is Active
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"  # stderr: Proving Key <oldId> (<OLD>) is Draining
    cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)'   # prints <newId>
    ```
 
@@ -130,7 +140,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    2. Make a test request with the dice demo:
 
       ```sh
-      DEMO_PRIVATE_KEY=0x... npm run demo:dice --prefix worker   # reads deployments/31.json
+      RPC_URL="$LOGS_RPC_URL" DEMO_PRIVATE_KEY=0x... npm run demo:dice --prefix worker   # reads deployments/31.json
       ```
 
       Verify: the script prints `requestId <requestId>` and ends with a `RESULT` line. Read the key of the request:
@@ -144,7 +154,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    3. Make sure that no request of the old key stays Pending past its Deadline:
 
       ```sh
-      contracts/script/pending-requests.sh "$RECORD" "$OLD"
+      RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"
       ```
 
       Verify: each listed request becomes Fulfilled before its Deadline. If a request misses its Deadline, use [outage.md](outage.md), section 5.
@@ -154,7 +164,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    1. Make sure that the old key is Retired:
 
       ```sh
-      contracts/script/pending-requests.sh "$RECORD" "$OLD"
+      RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"
       ```
 
       Verify: stderr shows `is Retired` and `0 Pending`. If it shows `is Draining`, wait.
@@ -217,5 +227,5 @@ Requests made before block <block> stay bound to Proving Key <oldId>, and the wo
   - The worker holds every Active and Draining key and follows `KeyStateChanged`.
   - A key that the secret store does not have is reported with `"held":false`.
 - By hand on rskj regtest, against a deployment from `deploy.sh`: `node worker/src/main.ts keygen` with stdout to a file (67 bytes, and `proving-key.pub` gives the `publicKey` and `keyHash` lines that step 2 reads), then the `cast call` lines for `activeKeyId()` and `getRequest(bytes32)`. The status is the second field and the keyId is the tenth field, in the order of the `Request` struct.
-- Dry run only (no AWS account, Terraform, `age` or Safe UI on the walkthrough machine): steps 1 to 4, 6.1, 7.2, 7.3 and 8. The commands come from [infra/README.md](../../infra/README.md) and the worker CLI (`worker/src/cli.ts`). Do them on testnet at the pre-demo drill and correct this runbook.
+- Dry run only (no AWS account, Terraform, `age` or Safe UI on the walkthrough machine): steps 1 to 4, 6.1, 7.2, 7.3 and 8. The commands come from [infra/README.md](../../infra/README.md) and the worker CLI (`worker/src/cli.ts`). Do them on testnet at the pre-demo drill, log each step in [drill-log.md](drill-log.md), and correct this runbook.
 - Fixes folded in: `safe-tx.sh` now refuses a transaction that reverts from the Admin Safe. `pending-requests.sh` reads the keyId from `KeyRegistered`, because the coordinator has no view from keyHash to keyId.
