@@ -311,6 +311,19 @@ contract VRFCoordinatorTest is CoordinatorVectorFixture {
         fulfillAs(fulfiller, v);
     }
 
+    /// A second encoding of the same G1 point would give a second drand randomness,
+    /// so a second Alpha and a second Beta for one request.
+    function test_FulfillRejectsNonCanonicalEncodingOfValidDrandSignature() public {
+        requestAll();
+        uint256 bn254FieldModulus = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
+        for (uint256 i; i < 2; i++) {
+            RequestVector memory v = vector(0);
+            v.drandSignature[i] += bn254FieldModulus;
+            vm.expectRevert(VRFCoordinator.InvalidDrandSignature.selector);
+            fulfillAs(fulfiller, v);
+        }
+    }
+
     function test_FulfillRejectsContractCaller() public {
         requestAll();
         RequestVector memory v = vector(0);
