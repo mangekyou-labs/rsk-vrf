@@ -107,6 +107,6 @@ Testnet pilot, not externally audited; do not use for value.
 
 `rejections` reported `isolated: <true|false>` (see "Isolation" above).
 
-Missed Deadline count outside the announced outage window: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
+Missed Deadline count outside the announced outage window, from `missed-deadlines <record> <fromBlock> <toBlock> --exclude <window>`: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
 
 Outage window Incident Note: <link to the issue>.
