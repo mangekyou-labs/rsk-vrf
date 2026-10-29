@@ -19,7 +19,7 @@ async function scenario(body: (s: Awaited<ReturnType<typeof setup>>) => Promise<
   const s = await setup(); try { await body(s); } finally { await new Promise<void>(resolve => s.server.close(() => resolve())); }
 }
 async function setup() {
-  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, callbackGasCap: 0, simulationGas: [] as bigint[], simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0, maxLogSpan: null as bigint | null, logSpans: [] as bigint[] };
+  const state = { latest: 100n, gasPrice: 100n, balance: 10n ** 18n, pendingNonce: 0, minedNonce: 0, outcome: null as bigint | null, status: 1, requestBlock: 90n, callbackGasCap: 0, simulationGas: [] as bigint[], simulationFails: false, hashMissing: false, pool: null as Record<string, unknown> | null, sent: [] as Hex[], requestReads: 0, nonceReads: 0, receiptReads: 0, maxLogSpan: null as bigint | null, logSpans: [] as bigint[], syncing: false as boolean | 'missing' | 'broken', alerts: [] as string[] };
   function log(eventName: 'RandomnessRequested' | 'Fulfilled', block: bigint) {
     const topics = encodeEventTopics({ abi: coordinatorAbi, eventName, args: { requestId, requester: address, fulfiller: address } as never });
     const data = eventName === 'Fulfilled' ? encodeAbiParameters([{ type: 'bytes32' }], [zero]) : encodeAbiParameters([{ type: 'bytes32' }, { type: 'uint32' }, { type: 'uint64' }, { type: 'uint48' }, { type: 'uint48' }, { type: 'uint96' }, { type: 'uint32' }], [zero, 1, 1n, 90, 5000, 0n, 0]);
@@ -27,11 +27,14 @@ async function setup() {
   }
   const server = createServer(async (req, res) => {
     let input = ''; for await (const chunk of req) input += chunk;
+    if (req.url !== '/') { state.alerts.push(input); res.end(); return; }
     const call = JSON.parse(input);
+    if (call.method === 'eth_syncing' && state.syncing === 'missing') { res.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, error: { code: -32601, message: 'Method eth_syncing does not exist/is not available' } })); return; }
     try {
       let result: unknown;
       switch (call.method) {
         case 'eth_blockNumber': result = toHex(state.latest); break;
+        case 'eth_syncing': if (state.syncing === 'broken') throw Error('node down'); result = state.syncing; break;
         case 'eth_gasPrice': result = toHex(state.gasPrice); break;
         case 'eth_getBlockByNumber': result = { minimumGasPrice: '0x64' }; break;
         case 'eth_getBalance': result = toHex(state.balance); break;
@@ -63,8 +66,9 @@ async function setup() {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const rpcUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const chain = defineChain({ id: 33, name: 'test', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
-  const makeWorker = (fulfiller: LocalAccount = privateKeyToAccount(`0x${'34'.repeat(32)}`)) => createWorker({ rpcUrl, coordinator: address, chain, fulfiller, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
-  return { state, server, makeWorker };
+  const watchdog = { workerId: 'worker', pageUrl: `${rpcUrl}/page`, warningUrl: `${rpcUrl}/warn` };
+  const makeWorker = (fulfiller: LocalAccount = privateKeyToAccount(`0x${'34'.repeat(32)}`), extra: { watchdog?: typeof watchdog } = {}) => createWorker({ ...extra, rpcUrl, coordinator: address, chain, fulfiller, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
+  return { state, server, makeWorker, watchdog };
 }
 it('signs fulfillments with an injected Fulfiller account such as the KMS one', () => scenario(async ({ state, makeWorker }) => {
   const signer = privateKeyToAccount(`0x${'56'.repeat(32)}`);
@@ -161,6 +165,14 @@ it('splits every log read below a node block-range cap such as the Rootstock RPC
   assert.equal((await makeWorker().pollOnce())[0]?.status, 'submitted');
   assert.ok(state.logSpans.length >= 10, 'outcome and key registry reads are all split');
   assert.ok(state.logSpans.every(span => span <= 2_000n));
+}));
+it('skips the sync check on a node without eth_syncing but still fails the poll on other errors', () => scenario(async ({ state, makeWorker, watchdog }) => {
+  const worker = makeWorker(undefined, { watchdog });
+  state.syncing = true; await worker.pollOnce();
+  assert.ok(state.alerts.some(alert => alert.includes('node_unhealthy')), 'a syncing node warns');
+  state.alerts = []; state.syncing = 'missing'; await worker.pollOnce();
+  assert.ok(!state.alerts.some(alert => alert.includes('node_unhealthy')));
+  state.syncing = 'broken'; await assert.rejects(worker.pollOnce());
 }));
 it('can fulfill at the exact twenty-fulfillment reserve and stops one wei below it', () => scenario(async ({ state, makeWorker }) => {
   state.balance = 6_934_399_999n;

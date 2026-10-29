@@ -1,4 +1,4 @@
-import { createPublicClient, decodeFunctionData, encodeFunctionData, http, parseAbiItem, type AbiEvent, type Address, type Chain, type Hex } from 'viem';
+import { BaseError, createPublicClient, decodeFunctionData, MethodNotFoundRpcError, encodeFunctionData, http, parseAbiItem, type AbiEvent, type Address, type Chain, type Hex } from 'viem';
 import { sendRawTransaction } from 'viem/actions';
 import type { LocalAccount } from 'viem/accounts';
 import { composeFulfillment, coordinatorAbi, KeyState, servesKey } from './coordinator.ts';
@@ -571,7 +571,13 @@ export function createWorker(config: WorkerConfig) {
         let rpcFailed = false;
         const latest = await publicClient.getBlockNumber({ cacheTime: 0 });
         if (config.watchdog) {
-          const syncing: unknown = await publicClient.request({ method: 'eth_syncing' as never, params: [] as never });
+          // Hosted RPCs such as the Rootstock RPC API do not give eth_syncing; they keep their own nodes in sync.
+          let syncing: unknown = false;
+          try {
+            syncing = await publicClient.request({ method: 'eth_syncing' as never, params: [] as never });
+          } catch (error) {
+            if (!(error instanceof BaseError && error.walk(cause => cause instanceof MethodNotFoundRpcError))) throw error;
+          }
           if (syncing !== false) await watchdog.alert('warn', 'node_unhealthy', { reason: 'syncing' });
           else watchdog.clear('node_unhealthy');
         }
