@@ -41,6 +41,8 @@ jobs:
         run: python3 script/test-upgrade-safety.py --integration
       - name: Test deploy record and verify scripts
         run: python3 script/test-deploy-scripts.py
+      - name: Test the chain 31 rollout wizard
+        run: python3 script/test-rollout-wizard.py
       - name: Storage layout and runtime size gates
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

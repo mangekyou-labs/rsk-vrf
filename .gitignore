@@ -5,3 +5,6 @@ contracts/broadcast/
 # Only the chain 31 record is committed; regtest rehearsals write here too.
 /deployments/*
 !/deployments/31.json
+
+# State and logs of contracts/script/rollout-wizard.sh.
+/.rollout-31/

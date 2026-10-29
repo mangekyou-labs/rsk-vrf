@@ -29,6 +29,8 @@ Each step of the rollout (#41) and where it is done:
 | 4. Count the missed Deadlines | [outage.md, section 7](../runbooks/outage.md#7-count-the-missed-deadlines) | `npm run demo:missed-deadlines --prefix worker` |
 | 5. Final demo run | [demo.md](../demo.md) | `npm run demo:<name> --prefix worker` |
 
+`contracts/script/rollout-wizard.sh` walks through these steps in order. It prints each command, waits for you, writes the times into the [drill log](../runbooks/drill-log.md), does not pass the gate until every demo script passes, and runs the missed-Deadline count. It never asks for a key: you sign on the Ledger and in the Safe UI, and you run the demo scripts in a second shell. It keeps its state in `.rollout-31/`, so a rerun resumes where it stopped (`--status` lists the stages).
+
 ## 1. Create the Admin Safe
 
 The Admin Safe is a SafeL2 v1.4.1, 2-of-3. Each owner is a hardware wallet, and the three owners are held by at least two people.
