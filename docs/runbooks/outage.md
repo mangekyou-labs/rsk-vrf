@@ -403,6 +403,19 @@ At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause
 <Change, so that this does not occur again.>
 ```
 
+## 7. Count the missed Deadlines
+
+The missed-Deadline count is reported, with a target of 0 outside an announced outage window. Count it for a block range, for example the blocks of the pilot:
+
+```sh
+RPC_URL="$RPC_URL" npm run demo:missed-deadlines --prefix worker -- "$PWD/$RECORD" <fromBlock> <toBlock> \
+  --exclude <first block of the outage window>-<last block of the outage window>
+```
+
+The script counts each request with a Deadline in the range that the workers did not fulfill: it is still Pending after its Deadline, or it was refunded after its Deadline. It uses the same rule as the `missed_deadline` Page, so a refund after a Revocation is not counted. Each `--exclude` removes the requests with a Deadline in that window. You can give `--exclude` more than one time.
+
+Verify: the script prints one line `<requestId> deadline <block> <Pending|Refunded>` for each missed Deadline, then `<count> missed Deadline in blocks <fromBlock>..<toBlock>`, then a `RESULT` line. Each missed Deadline outside the excluded windows has an Incident Note from [section 5](#5-a-request-missed-its-deadline).
+
 ## Walkthrough record
 
 **2026-10-29, rskj regtest, unit tests and a dry run.**
@@ -411,6 +424,10 @@ At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause
   - `check-withheld-proof.ts` accepts the Page as a file and prints `RESULT {"valid":true,...}`.
   - It refuses a proof with a changed Beta.
   - It also accepts only the `proof` object, and it refuses a changed proof.
+- `worker/integration/runbooks.test.ts` ("runbook tools on real rskj", `missed-deadlines`) does section 7 on rskj regtest. Of four requests, one is fulfilled, one stays Pending after its Deadline, one is refunded after its Deadline, and one has its Deadline after the range. Results:
+  - `missed-deadlines.ts` counts 2: the Pending request and the refunded request.
+  - With `--exclude` over the Deadline of the refunded request, it counts 1.
+  - It refuses a range that ends before it starts.
 - `worker/integration/watchdog.test.ts` covers the alerts of each section: `low_balance`, `top_up_balance`, `drand_stall`, `pending_age`, `node_unhealthy`, `rpc_unhealthy`, `missed_deadline` with the proof in the Page and the JSON log line, and no Page for a refund after a Revocation.
 - `worker/integration/watchdog.test.ts` ("stops the healthchecks.io heartbeat when the node stops answering") and `worker/test/loop.test.ts` cover the Dead-man's Switch: a heartbeat only after a completed poll, and no heartbeat after a failed or stalled poll. `worker/integration/regtest.test.ts` covers the Backup Worker with `GRACE_BLOCKS` 100 and a drand stall with no refund.
 - Dry run only (no AWS account, Terraform, healthchecks.io or live drand stall on the walkthrough machine): sections 1 to 4 and section 6. The commands come from [infra/README.md](../../infra/README.md) and the alert names from `worker/src/worker.ts`. Do them on testnet at the pre-demo drill, log each step in [drill-log.md](drill-log.md), and correct this runbook.

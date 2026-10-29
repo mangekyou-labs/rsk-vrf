@@ -63,6 +63,8 @@ Run each one from `worker/` with `npm run demo:<name>`.
 
    **Timing.** The script fulfills request A first, then sends all five transactions in the first block where request B is Fulfillable, so they land before the operator fulfills B. On regtest the script mines that block itself. On a live chain the worker may fulfill B first. The script detects this: B is no longer Pending before it broadcasts, or a rejection lands in or after B's fulfill block. It then stops with "the operator's worker fulfilled B before the rejections landed ... rerun rejections". Rerun it.
 
+7. **`missed-deadlines`** reports the missed-Deadline count for the walkthrough. It reads the record and takes a block range, `<record> <fromBlock> <toBlock>`, and an `--exclude <from>-<to>` for each announced outage window. It prints each request with a Deadline in the range that is still Pending after its Deadline or was refunded after it, as `<requestId> deadline <block> <Pending|Refunded>`, then the count. The rule is the worker's `missed_deadline` rule, so a refund after a Revocation is not counted. The target is 0 outside the announced window. See [outage.md, section 7](runbooks/outage.md#7-count-the-missed-deadlines). It sends no transaction and needs no `DEMO_PRIVATE_KEY`. `worker/integration/runbooks.test.ts` runs it on regtest, not `demo.test.ts`.
+
 ## The noble and Go cross-check
 
 The worker proves with noble (TypeScript). The reference is Chainlink's Go VRF code in `tools/vrf-vectors-go`. When `GO_VRF_URL` points at that tool's test relay, `recompute-beta` does two more things:
@@ -105,6 +107,6 @@ Testnet pilot, not externally audited; do not use for value.
 
 `rejections` reported `isolated: <true|false>` (see "Isolation" above).
 
-Missed Deadline count outside the announced outage window: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
+Missed Deadline count outside the announced outage window, from `missed-deadlines <record> <fromBlock> <toBlock> --exclude <window>`: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
 
 Outage window Incident Note: <link to the issue>.

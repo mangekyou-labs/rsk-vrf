@@ -163,6 +163,74 @@ describe('runbook tools on real rskj', { concurrency: 1 }, () => {
     }
   });
 
+  it('missed-deadlines counts the requests not fulfilled by their Deadline in a block range, less an announced window', { timeout: 300_000 }, async () => {
+    await withRelay(18798, async relayUrl => {
+      const implementation = artifact('VRFCoordinator');
+      const impl = await receipt(await wallet.deployContract({ abi: implementation.abi, bytecode: implementation.bytecode.object, gas: 6_500_000n, gasPrice: 1n }));
+      const pin: DrandPin = { publicKey: fixture.drand.publicKey.map(BigInt), genesis: BigInt(fixture.drand.genesis), period: BigInt(fixture.drand.period) };
+      const proxy = artifact('ERC1967Proxy');
+      const init = encodeFunctionData({ abi: implementation.abi, functionName: 'initialize', args: [signer.address, pin] });
+      const created = await receipt(await wallet.deployContract({ abi: proxy.abi, bytecode: proxy.bytecode.object, args: [impl.contractAddress!, init], gas: 2_000_000n, gasPrice: 1n }));
+      const coordinator = created.contractAddress!;
+      const key = ProvingKey.fromHex(fixture.vectors[0].vrf.secretKey);
+      await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'registerProvingKey', args: [key.publicKey, signer.address], gas: 500_000n, gasPrice: 1n }));
+      const fulfiller = privateKeyToAccount(`0x${'7d'.repeat(32)}`);
+      await receipt(await wallet.sendTransaction({ to: fulfiller.address, value: 10n ** 18n, gas: 21_000n, gasPrice: 1n }));
+
+      // Each request is mined in its own block, so each has its own Deadline.
+      const fulfilled = await request(coordinator, 'c1');
+      const stillPending = await request(coordinator, 'c2');
+      const refunded = await request(coordinator, 'c3');
+      const late = await request(coordinator, 'c4');
+      await mineTo(BigInt(fulfilled.record.requestBlock + fulfilled.record.confirmations));
+      const worker = createWorker({
+        rpcUrl, coordinator, chain, fulfiller, drandPin: pin, relayUrl,
+        loadProvingKey: async hash => hash.toLowerCase() === key.keyHash ? key : undefined,
+        nowSeconds: () => pin.genesis + (fulfilled.record.targetRound + 1n) * pin.period, report: () => {},
+      });
+      const sent = (await worker.pollOnce()).find(entry => entry.requestId === fulfilled.requestId);
+      assert.equal(sent?.status, 'submitted');
+      await receipt(sent!.transactionHash!);
+      await mineTo(BigInt(refunded.record.deadline) + 1n);
+      const refund = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'timeoutRefund', args: [refunded.requestId], gas: 200_000n, gasPrice: 1n }));
+      assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refund.logs })[0]!.args.reason, RefundReason.Deadline);
+      await mineTo(BigInt(late.record.deadline) + 1n);
+
+      mkdirSync(deploymentsDir, { recursive: true });
+      const dir = mkdtempSync(join(deploymentsDir, 'test-'));
+      const record = join(dir, '33.json');
+      writeFileSync(record, JSON.stringify({ chainId: 33, safe: signer.address, contracts: { proxy: { address: coordinator, block: Number(created.blockNumber) } } }));
+      try {
+        const count = async (...args: string[]) => {
+          const result = await run('node', ['demo/missed-deadlines.ts', record, ...args], workerDir, { RPC_URL: rpcUrl });
+          assert.equal(result.code, 0, result.output);
+          const line = result.stdout.split('\n').find(text => text.startsWith('RESULT '));
+          assert.ok(line, result.output);
+          return { output: result.stdout, result: JSON.parse(line.slice('RESULT '.length)) as { count: number; missed: { requestId: Hex; deadline: number; outcome: string }[] } };
+        };
+        // The range ends before the last request's Deadline, so that request is out of it.
+        const all = await count(String(fulfilled.record.deadline), String(refunded.record.deadline));
+        assert.equal(all.result.count, 2, all.output);
+        assert.deepEqual(all.result.missed, [
+          { requestId: stillPending.requestId, deadline: stillPending.record.deadline, outcome: 'Pending' },
+          { requestId: refunded.requestId, deadline: refunded.record.deadline, outcome: 'Refunded' },
+        ], 'a fulfilled request is not a miss; one still Pending past its Deadline and one refunded are');
+        assert.match(all.output, /^2 missed Deadline/m, 'prints the count');
+        assert.ok(all.output.includes(`${stillPending.requestId} deadline ${stillPending.record.deadline} Pending`), 'prints each miss with its Deadline and outcome');
+
+        const window = `${refunded.record.deadline}-${late.record.deadline}`;
+        const outside = await count(String(fulfilled.record.deadline), String(late.record.deadline), '--exclude', window);
+        assert.deepEqual(outside.result.missed.map(miss => miss.requestId), [stillPending.requestId], 'a miss whose Deadline is in the excluded window is dropped');
+        assert.equal(outside.result.count, 1);
+
+        const bad = await run('node', ['demo/missed-deadlines.ts', record, '10', '5'], workerDir, { RPC_URL: rpcUrl });
+        assert.notEqual(bad.code, 0, 'a range that ends before it starts is an error');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('check-withheld-proof accepts the proof a missed Deadline page publishes and rejects a changed one', { timeout: 300_000 }, async () => {
     await withRelay(18797, async relayUrl => {
       // Owner is the genesis EOA here; the coordinator uses the test drand chain of the relay.
