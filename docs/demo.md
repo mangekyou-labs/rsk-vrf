@@ -76,3 +76,37 @@ The Go relay proves with the public test key and signs with the public test dran
 ## On regtest
 
 `worker/integration/demo.test.ts` runs every script against rskj regtest, as part of `npm run test:integration`. It deploys with `deploy.sh`, and uses a Safe stand-in as the Admin and Payee. It runs the worker in the background and asserts each script's `RESULT` line, including the Safe withdrawal flow. CI runs it in the "Worker on rskj regtest" job; see [the worker README](../worker/README.md#offline-full-loop) to run it locally.
+
+## Results
+
+Fill in this section after the final demo run on chain 31, against the Active Key after the drill Rotation. Copy each link from the script output. Do not fill in a value that a script did not print.
+
+Testnet pilot, not externally audited; do not use for value.
+
+| Field | Value |
+| --- | --- |
+| Date (UTC) | <date> |
+| Coordinator (proxy) | <explorer link> |
+| Active Key | <keyId>, keyHash <keyHash> |
+| Drill log | <link to the drill log, see [runbooks/drill-log.md](runbooks/drill-log.md)> |
+
+| Scenario | Script | What the link shows | Explorer link |
+| --- | --- | --- | --- |
+| On-chain verification | `dice` | The fulfill transaction: the coordinator verifies the proof and stores Beta | <explorer link> |
+| Deterministic output | `recompute-beta` | The fulfill transaction whose Beta the script recomputes (`proofVerified: true`) | <explorer link> |
+| Callback path | `dice` | The fulfill transaction that emits `Rolled` | <explorer link> |
+| Read path | `read-path` | The fulfill transaction of the request that the script reads with `deriveRandomBytes` | <explorer link> |
+| Fee settlement: fee credited | `reverting-consumer` | The fulfill transaction that emits `CallbackFailed` and credits the fee to the Payee | <explorer link> |
+| Fee settlement: fees withdrawn | `withdraw-fees` | The transaction that emits `FeesWithdrawn` | <explorer link> |
+| Timeout Refund | `timeoutRefund` after the outage window | The refund transaction (see the outage Incident Note) | <explorer link> |
+| Rejection: invalid, corrupted gamma | `rejections` | Reverted with `gamma is not on curve` | <explorer link> |
+| Rejection: invalid, corrupted s | `rejections` | Reverted with `addr(c*pk+s*g)!=_uWitness` | <explorer link> |
+| Rejection: mismatched, A's proof on B | `rejections` | Reverted with `Second mul check failed` | <explorer link> |
+| Rejection: mismatched, wrong drand round | `rejections` | Reverted with `InvalidDrandSignature` | <explorer link> |
+| Rejection: repeated, on Fulfilled A | `rejections` | Reverted with `RequestNotPending(2)` | <explorer link> |
+
+`rejections` reported `isolated: <true|false>` (see "Isolation" above).
+
+Missed Deadline count outside the announced outage window: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
+
+Outage window Incident Note: <link to the issue>.
