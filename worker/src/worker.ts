@@ -69,6 +69,14 @@ const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
 const SELF_GAS = 21_000n;
 export const RESERVE_FULFILLS = 20n;
+const REFUND_REASON = { DEADLINE: 0, KEY_REVOKED: 1 } as const;
+
+/** How a request missed its Deadline as of block `latest`, as the watchdog pages it: still Pending past it, or refunded on the Deadline branch. A Revocation Refund is not a miss. */
+export function deadlineMiss(request: { status: number; deadline: number }, refundReason: number | undefined, latest: bigint): 'Pending' | 'Refunded' | undefined {
+  if (request.status === REQUEST_STATUS.PENDING && latest > BigInt(request.deadline)) return 'Pending';
+  if (request.status === REQUEST_STATUS.REFUNDED && refundReason === REFUND_REASON.DEADLINE) return 'Refunded';
+  return undefined;
+}
 
 const requestedEvent = parseAbiItem('event RandomnessRequested(bytes32 indexed requestId, address indexed requester, bytes32 tag, uint32 keyId, uint64 targetRound, uint48 requestBlock, uint48 deadline, uint96 fee, uint32 callbackGasCap)');
 const fulfilledEvent = parseAbiItem('event Fulfilled(bytes32 indexed requestId, bytes32 beta, address indexed fulfiller)');
@@ -614,7 +622,7 @@ export function createWorker(config: WorkerConfig) {
           if (log.blockNumber == null || log.args.fulfiller == null || ownedFulfillers.has(log.args.fulfiller.toLowerCase())) continue;
           await watchdog.alert('page', 'foreign_fulfillment', { requestId: log.args.requestId, fulfiller: log.args.fulfiller, block: log.blockNumber }, `foreign_fulfillment:${log.blockHash}:${log.logIndex}`);
         }
-        const deadlineRefunds = new Set(refundedLogs.filter(log => log.args.reason === 0).map(log => log.args.requestId));
+        const refundReasons = new Map(refundedLogs.map(log => [log.args.requestId, log.args.reason]));
         const requestInWindow = new Set<Hex>();
         for (const log of requestedLogs) {
           if (log.blockNumber == null) continue;
@@ -665,7 +673,7 @@ export function createWorker(config: WorkerConfig) {
               continue;
             }
             reportedGone.delete(requestId);
-            if (request.status === REQUEST_STATUS.REFUNDED && (deadlineRefunds.has(requestId) || incidentRefunds.has(requestId))) {
+            if (request.status === REQUEST_STATUS.REFUNDED && (incidentRefunds.has(requestId) || deadlineMiss(request, refundReasons.get(requestId), latest))) {
               incidentRefunds.add(requestId);
               if (!await missedDeadline(requestId, request, latest)) {
                 results.push({ requestId, status: 'waiting' });
@@ -689,7 +697,7 @@ export function createWorker(config: WorkerConfig) {
               continue;
             }
             if (!oldest || BigInt(request.requestBlock) < oldest.requestBlock) oldest = { requestId, requestBlock: BigInt(request.requestBlock), deadline: BigInt(request.deadline) };
-            if (latest > BigInt(request.deadline)) {
+            if (deadlineMiss(request, undefined, latest)) {
               await missedDeadline(requestId, request, latest);
               results.push({ requestId, status: 'skipped' });
               continue;
