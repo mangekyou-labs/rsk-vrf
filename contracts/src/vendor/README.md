@@ -1,6 +1,6 @@
 # Vendored verifiers
 
-> **Unaudited testnet pilot; do not use for value.**
+> **Testnet pilot, not externally audited; do not use for value.**
 
 These files are copied byte for byte from upstream and must never be edited. [`PINS`](PINS) records each file's upstream git blob hash; CI runs [`check-vendor-pins.sh`](../../script/check-vendor-pins.sh) on every PR and fails if a file differs. Wrap or extend them in our own code instead. See [Verifier Source and License](https://github.com/mangekyou-labs/rsk-vrf/issues/13) and [Verifier Review Expectation](https://github.com/mangekyou-labs/rsk-vrf/issues/12).
 

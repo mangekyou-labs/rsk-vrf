@@ -36,7 +36,7 @@ No Critical or High finding. One guard test was added (finding 8). No contract c
 
 1. **Medium. A Requester that cannot accept rBTC keeps its Escrow locked.** `timeoutRefund` pushes the Escrow to the Requester. If the Requester reverts on receive, the Refund reverts and the request stays Pending. After the Deadline or a Revocation, nobody can fulfill it. The funds are the Requester's own funds. Issue #6 chose the push model. Handled: no code change. The consumer guide and the `VRFConsumer` NatSpec tell callback consumers to accept rBTC Refunds. `test_FailedRefundKeepsEscrowAndPendingStatusUntilRequesterAccepts` pins the behaviour.
 
-2. **Low. `registerProvingKey` accepts Payee `address(0)`.** Fees credited to `address(0)` can never be withdrawn. Only the Admin can cause this. Handled: no code change. `DeploymentAssertions` requires Payee = Safe for the first key. For each later Rotation, check the Payee in the Safe transaction before you sign it.
+2. **Low. `registerProvingKey` accepts Payee `address(0)`.** Fees credited to `address(0)` can never be withdrawn. Only the Admin can cause this. Fixed: `registerProvingKey` reverts with `InvalidPayee` when the Payee is `address(0)`. `test_RegisterProvingKeyRejectsZeroPayee` pins the behaviour. The fix is in the deployed coordinator only after the next upgrade. For each Rotation, also check that the Payee in the Safe transaction is the Admin Safe before you sign it.
 
 3. **Low. The Admin can call `renounceOwnership`.** `Ownable2StepUpgradeable` keeps this function. After it, nobody can upgrade, register a key or revoke a key. Revocation is the emergency stop, so this removes it. Only the Admin Safe can call it. Handled: no code change. Do not sign a Safe transaction that calls it.
 

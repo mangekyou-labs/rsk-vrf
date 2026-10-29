@@ -5,7 +5,7 @@ import {VRFConsumer} from "../VRFConsumer.sol";
 import {VRFCoordinator} from "../VRFCoordinator.sol";
 
 /// @title DemoDice
-/// @notice Demo only; unaudited testnet pilot, do not use for value. A die whose face
+/// @notice Demo only; testnet pilot, not externally audited; do not use for value. A die whose face
 ///   comes from the coordinator's `deriveRandomInRange(1, 6)` once the callback has
 ///   stored the request's verified Beta.
 contract DemoDice is VRFConsumer {
