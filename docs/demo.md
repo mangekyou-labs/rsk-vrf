@@ -13,13 +13,13 @@ The scripts read the coordinator address from the deployment record that `contra
 ```sh
 (cd contracts && forge build)   # the scripts deploy the demo consumers from contracts/out
 cd worker && npm ci
-export RPC_URL=https://public-node.testnet.rsk.co
+export RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 export DEMO_PRIVATE_KEY=0x...   # a throwaway key holding faucet tRBTC
 ```
 
 | Variable | Meaning |
 | --- | --- |
-| `RPC_URL` | JSON-RPC endpoint. Required. |
+| `RPC_URL` | JSON-RPC endpoint. Required. The scripts find the fulfill transaction with `eth_getLogs`, which the public node (`https://public-node.testnet.rsk.co`) does not serve. Use an RPC that serves it. |
 | `DEMO_PRIVATE_KEY` | Sender key. It pays the fees and gas. Required. |
 | `DEPLOYMENT_FILE` | Deployment record. Defaults to `deployments/<chainId>.json`. |
 | `DRAND_RELAY_URL` | drand HTTP endpoint for `recompute-beta` and `rejections`. Defaults to the evmnet chain on `api.drand.sh`. |
@@ -62,6 +62,10 @@ Run each one from `worker/` with `npm run demo:<name>`.
    `RESULT` reports `isolated: true`. On other chains the key is secret, so the script falls back to building the cases from A's proof. It prints `not isolated` and reports `isolated: false`. Those cases are then also over the wrong Alpha, but the first check they fail, and so the expected error, is the same.
 
    **Timing.** The script fulfills request A first, then sends all five transactions in the first block where request B is Fulfillable, so they land before the operator fulfills B. On regtest the script mines that block itself. On a live chain the worker may fulfill B first. The script detects this: B is no longer Pending before it broadcasts, or a rejection lands in or after B's fulfill block. It then stops with "the operator's worker fulfilled B before the rejections landed ... rerun rejections". Rerun it.
+
+## Timeout Refund
+
+No script covers the timeout Refund, because a request is refunded only if no worker fulfills it before its Deadline (1,200 blocks). The outage window of the rollout does this scenario with `cast`: a demo request with both workers stopped, `timeoutRefund` after the Deadline, and the `missed_deadline` Page with the withheld proof. See [outage.md, section 7.2](runbooks/outage.md#72-outage-window). The Revocation drill also refunds a request, after a Revocation and before its Deadline ([compromise.md](runbooks/compromise.md), section 1).
 
 ## The noble and Go cross-check
 

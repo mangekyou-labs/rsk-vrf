@@ -22,7 +22,17 @@ export RPC_URL=https://public-node.testnet.rsk.co   # operator reads and sends o
 RECORD=deployments/31.json
 PROXY=$(jq -r .contracts.proxy.address "$RECORD")
 OLD=0x...                                            # keyHash of the Active Key now
+LOGS_RPC_URL=<an RPC of chain 31 that serves eth_getLogs>
 ```
+
+The public node does not serve `eth_getLogs`. `pending-requests.sh` and the demo scripts read event logs, so run them with `RPC_URL="$LOGS_RPC_URL"`. Check it first:
+
+```sh
+cast logs --rpc-url "$LOGS_RPC_URL" --address "$PROXY" \
+  --from-block "$(jq .contracts.proxy.block "$RECORD")" --to-block "$(jq .contracts.proxy.block "$RECORD")"
+```
+
+Verify: the command prints the logs of the proxy creation and no error.
 
 The deploy and hand-off of the coordinator are in [docs/development/deploy.md](../development/deploy.md).
 
@@ -109,8 +119,8 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    Verify:
 
    ```sh
-   contracts/script/pending-requests.sh "$RECORD" <NEW>   # stderr: Proving Key <newId> (<NEW>) is Active
-   contracts/script/pending-requests.sh "$RECORD" "$OLD"  # stderr: Proving Key <oldId> (<OLD>) is Draining
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" <NEW>   # stderr: Proving Key <newId> (<NEW>) is Active
+   RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"  # stderr: Proving Key <oldId> (<OLD>) is Draining
    cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)'   # prints <newId>
    ```
 
@@ -130,7 +140,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    2. Make a test request with the dice demo:
 
       ```sh
-      DEMO_PRIVATE_KEY=0x... npm run demo:dice --prefix worker   # reads deployments/31.json
+      RPC_URL="$LOGS_RPC_URL" DEMO_PRIVATE_KEY=0x... npm run demo:dice --prefix worker   # reads deployments/31.json
       ```
 
       Verify: the script prints `requestId <requestId>` and ends with a `RESULT` line. Read the key of the request:
@@ -144,7 +154,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    3. Make sure that no request of the old key stays Pending past its Deadline:
 
       ```sh
-      contracts/script/pending-requests.sh "$RECORD" "$OLD"
+      RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"
       ```
 
       Verify: each listed request becomes Fulfilled before its Deadline. If a request misses its Deadline, use [outage.md](outage.md), section 5.
@@ -154,7 +164,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
    1. Make sure that the old key is Retired:
 
       ```sh
-      contracts/script/pending-requests.sh "$RECORD" "$OLD"
+      RPC_URL="$LOGS_RPC_URL" contracts/script/pending-requests.sh "$RECORD" "$OLD"
       ```
 
       Verify: stderr shows `is Retired` and `0 Pending`. If it shows `is Draining`, wait.
