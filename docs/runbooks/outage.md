@@ -79,9 +79,30 @@ The worker pings healthchecks.io only after a completed poll. A missing heartbea
 
    Verify: as in step 3.
 
-5. **Post a short Incident Note.** Body: the host, the time it stopped and the time it started again, the cause, and whether the other host fulfilled all requests in that time.
+5. **Post a short Incident Note.** Use the template below.
+
+   ```sh
+   gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
+     --title "Worker stopped: <host>" --body-file heartbeat-note.md
+   ```
 
    Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue.
+
+### Incident Note template: heartbeat
+
+```markdown
+## What happened
+
+From <time, UTC> to <time, UTC>, the worker on <primary|backup> did not complete polls. Cause: <cause, from step 2>.
+
+## Effect on requests
+
+<The other host fulfilled all requests in that time. | List each request that the other host did not fulfill, and its result.> <No request missed its Deadline. | List each missed Deadline and link its note.>
+
+## What we changed
+
+<Restart, new instance, or other change.>
+```
 
 ## 2. rskj is not healthy
 
@@ -113,7 +134,32 @@ Never set the worker to the public node to stop the alert. The worker must read 
 
    Verify: as in step 2, then `aws logs tail /rsk-vrf/<host> --region <region> --since 5m --filter-pattern polling` shows a new `polling` line.
 
-4. **Post a short Incident Note** if the node was not healthy for more than 1 hour, or if Import Sync was necessary.
+4. **Post a short Incident Note** if the node was not healthy for more than 1 hour, or if Import Sync was necessary. Use the template below.
+
+   ```sh
+   gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
+     --title "rskj not healthy: <host>" --body-file rskj-note.md
+   ```
+
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue. If the node was healthy again in less than 1 hour and Import Sync was not necessary, no note is necessary.
+
+### Incident Note template: rskj
+
+```markdown
+## What happened
+
+From <time, UTC> to <time, UTC>, the rskj node on <primary|backup> was not healthy (<node_unhealthy | rpc_unhealthy>). Cause: <cause>.
+
+<Import Sync was necessary. It took <hours>. | Import Sync was not necessary.>
+
+## Effect on requests
+
+The other host fulfilled the requests in that time. <No request missed its Deadline. | List each missed Deadline and link its note.>
+
+## What we changed
+
+<Change, so that this does not occur again.>
+```
 
 ## 3. The Fulfiller balance is low
 
@@ -143,7 +189,7 @@ Never set the worker to the public node to stop the alert. The worker must read 
 
 `drand_stall` means that the target round of a request is past its time, but the worker cannot get the signature from the drand relays. The worker continues to try. The Deadline is long enough for a short stall.
 
-Never refund a request because of a drand stall. A refund is not an operator action. Only the Requester or a Deadline refund ends a request.
+Do not send a Refund because of a drand stall. The operator does not trigger Refunds for a drand stall. The request stays Pending, and the worker fulfills it when the round is available. After the Deadline, anyone can call `timeoutRefund`, and the Escrow goes back to the Requester.
 
 1. **Read the health of each relay.**
 
@@ -168,11 +214,34 @@ Never refund a request because of a drand stall. A refund is not an operator act
 
    Verify: each request is fulfilled when the round is available, or it gets to its Deadline. A request that gets to its Deadline is [section 5](#5-a-request-missed-its-deadline).
 
-4. **Post a short Incident Note** if the stall was longer than 1 hour or if a request missed its Deadline.
+4. **Post a short Incident Note** if the stall was longer than 1 hour or if a request missed its Deadline. Use the template below. A missed Deadline also gets its own note from [section 5](#5-a-request-missed-its-deadline).
+
+   ```sh
+   gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
+     --title "drand stall: rounds <first> to <last>" --body-file drand-note.md
+   ```
+
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue. If the stall was shorter than 1 hour and no request missed its Deadline, no note is necessary.
+
+### Incident Note template: drand stall
+
+```markdown
+## What happened
+
+From <time, UTC> to <time, UTC>, the drand `evmnet` chain did not publish rounds <first> to <last> on the relays <list>. The workers could not fulfill the requests with these Target Rounds.
+
+## Effect on requests
+
+The operator did not refund requests because of the stall. <Each request was fulfilled when its round was available. | List each request that missed its Deadline and link its note.>
+
+## What we changed
+
+<Nothing, because the cause was outside the service. | Change.>
+```
 
 ## 5. A request missed its Deadline
 
-The `missed_deadline` Page holds the request, the Deadline, the block and the withheld proof (`proof`), if the worker made it. A missed Deadline is the worst incident of the pilot: the Requester can refund, and a person can say that the operator held back an output it did not like. The Incident Note shows the output that the worker had.
+The `missed_deadline` Page holds the request, the Deadline, the block and the withheld proof (`proof`), if the worker made it. A missed Deadline is the worst incident of the pilot: the Requester can refund, and a person can say that the operator did a Selective Abort. The Incident Note shows the output that the worker had.
 
 Post the Incident Note **not more than 24 hours after the Deadline**.
 
@@ -201,6 +270,8 @@ Post the Incident Note **not more than 24 hours after the Deadline**.
    Verify: the script ends with `RESULT {"valid":true,...}`. If a check fails, the script stops with the failed check. Do not publish a proof that fails. Write the failure in the note.
 
 3. **Find why the worker did not fulfill.** Use sections 1 to 4. A refund after a Revocation is not a missed Deadline, and the worker does not page it.
+
+   Verify: you know the cause, and you can write it in the note. If you do not know the cause, write that in the note and continue to look for it.
 
 4. **Post the Incident Note.**
 
@@ -247,13 +318,44 @@ The script reads the request and the Proving Key from the chain and the drand si
 <Change, so that this does not occur again.>
 ````
 
-## 6. Other pages
+## 6. Other Pages
 
-- **`key_registry_changed`**: a `KeyRegistered` or `KeyStateChanged` event. It is expected only after an Admin Safe transaction that you know about (a Rotation or a Revocation). If you do not know the transaction, look at it in the Admin Safe history (`transactionHash` is in the Page). If the Admin Safe did not plan it, treat it as a compromise of the Admin Safe: use [compromise.md](compromise.md), section 3, step 2.
-- **`missing_proving_key`**: a request is bound to a key that the worker does not hold. Do [rotation.md](rotation.md), step 4 (`check-key`), on that host. If the secret does not load, put it again from the offline backup (rotation.md, step 3.2), then restart the host.
-- **`drand_config_mismatch`**: the request uses a drand config that is not the `drand_pin` of the worker. Compare the `drand_pin` in `infra/terraform.tfvars` with the drand config on chain. Change nothing on chain. The Admin Safe sets the drand config.
+1. **`key_registry_changed`**: a `KeyRegistered` or `KeyStateChanged` event. It is expected only after an Admin Safe transaction that you know about (a Rotation or a Revocation). If you do not know the transaction, look at it in the Admin Safe history (`transactionHash` is in the Page). If the Admin Safe did not plan it, treat it as a compromise of the Admin Safe: use [compromise.md](compromise.md), section 3, step 2.
 
-Verify for each: the Page stops, and a short Incident Note is posted.
+   Verify: the transaction is in the Admin Safe history and has two known signers, and `cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint256)'` prints the keyId that you expect.
+
+2. **`missing_proving_key`**: a request is bound to a key that the worker does not hold. Do [rotation.md](rotation.md), step 4 (`check-key`), on that host. If the secret does not load, put it again from the offline backup (rotation.md, step 3.2), then restart the host.
+
+   Verify: `check-key` prints `loads and matches keyHash <keyHash>`, `aws logs tail /rsk-vrf/<host> --region <region> --since 5m --filter-pattern key_sync` shows the key with `"held":true`, and the Page stops.
+
+3. **`drand_config_mismatch`**: the request uses a drand config that is not the `drand_pin` of the worker. Compare the `drand_pin` in `infra/terraform.tfvars` with the drand config on chain. Change nothing on chain. The Admin Safe sets the drand config.
+
+   Verify: you know which value is wrong. After the correction, the `drand_pin` agrees with the drand config on chain, and the Page stops.
+
+4. **Post a short Incident Note** for each of these Pages, except a `key_registry_changed` Page for a planned Rotation or Revocation. Use the template below.
+
+   ```sh
+   gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
+     --title "<alert name>: <host>" --body-file page-note.md
+   ```
+
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue.
+
+### Incident Note template: other Pages
+
+```markdown
+## What happened
+
+At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause: <cause>.
+
+## Effect on requests
+
+<No request missed its Deadline. | List each missed Deadline and link its note.>
+
+## What we changed
+
+<Change, so that this does not occur again.>
+```
 
 ## Walkthrough record
 

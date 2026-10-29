@@ -12,7 +12,7 @@ You need:
 - The `rsk-vrf-operator` role (MFA) for Secrets Manager and CloudWatch Logs.
 - The `rsk-vrf-host-access` role (MFA) for a shell on the hosts.
 - The credentials you use for Terraform (see [infra/README.md](../../infra/README.md)).
-- The owner's machine, with `node` (24 or later), `age`, Foundry (`cast`) and `jq`, and two offline backup media.
+- The Admin's machine, with `node` (24 or later), `age`, Foundry (`cast`) and `jq`, and two offline backup media.
 - A funded throwaway key for the test request (see [docs/demo.md](../demo.md)).
 
 Run all commands from the repository root. Set these first:
@@ -36,7 +36,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
 
    Verify: the message is in the channel.
 
-2. **Generate the new Proving Key on the owner's machine.** Use a directory on an encrypted disk. `keygen` refuses to write the secret to a terminal.
+2. **Generate the new Proving Key on the Admin's machine.** Use a directory on an encrypted disk. `keygen` refuses to write the secret to a terminal.
 
    ```sh
    umask 077
@@ -85,7 +85,7 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
 
       Verify: both lines print `matches`. If one does not, write that backup again.
 
-   5. Delete `proving-key.hex` from the owner's machine. Keep `proving-key.pub`.
+   5. Delete `proving-key.hex` from the Admin's machine. Keep `proving-key.pub`.
 
 4. **Do a dry run of `check-key` on both hosts.** The secret must load before you register the key. On each host, open a shell with the host-access role (`aws ssm start-session --region <eu-central-1|us-east-1> --target <instance_id>`), then:
 
@@ -176,16 +176,17 @@ The deploy and hand-off of the coordinator are in [docs/development/deploy.md](.
 
    3. Keep the two offline `age` backups of the old key until the pilot ends.
 
-8. **Record the Rotation.** Post a short Incident Note. A routine Rotation is an operational event, and consumers can then match the new keyHash:
+8. **Announce the Rotation in public.** A routine Rotation is not an incident. Do not use the `incident` label. Post a public note, so that consumers can match the new keyHash. Use the template below.
 
    ```sh
-   gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
+   gh issue create --repo mangekyou-labs/rsk-vrf \
      --title "Rotation: Proving Key <oldId> to <newId>" --body-file rotation-note.md
+   gh issue close --repo mangekyou-labs/rsk-vrf <issue number> --reason completed
    ```
 
-   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue.
+   Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --state closed --search "Rotation: Proving Key <oldId> to <newId>" --limit 1` shows the issue, and it has no labels.
 
-## Incident Note template: Rotation
+## Public note template: Rotation
 
 ```markdown
 ## What happened

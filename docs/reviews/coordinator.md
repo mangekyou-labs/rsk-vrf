@@ -38,13 +38,13 @@ No Critical or High finding. One guard test was added (finding 8). No contract c
 
 2. **Low. `registerProvingKey` accepts Payee `address(0)`.** Fees credited to `address(0)` can never be withdrawn. Only the Admin can cause this. Handled: no code change. `DeploymentAssertions` requires Payee = Safe for the first key. For each later Rotation, check the Payee in the Safe transaction before you sign it.
 
-3. **Low. The owner can call `renounceOwnership`.** `Ownable2StepUpgradeable` keeps this function. After it, nobody can upgrade, register a key or revoke a key. Revocation is the emergency stop, so this removes it. Only the Admin Safe can call it. Handled: no code change. Do not sign a Safe transaction that calls it.
+3. **Low. The Admin can call `renounceOwnership`.** `Ownable2StepUpgradeable` keeps this function. After it, nobody can upgrade, register a key or revoke a key. Revocation is the emergency stop, so this removes it. Only the Admin Safe can call it. Handled: no code change. Do not sign a Safe transaction that calls it.
 
 4. **Low. Target Round uses `block.timestamp`.** A Rootstock miner can move the timestamp a small amount. If a block timestamp is late by more than the round offset (40 rounds, 120 s for `evmnet`), the Target Round is already public when the request lands. Beta still needs the Proving Key, so a Requester alone gains nothing. Handled: no code change. The Admin can increase `roundOffset` if Rootstock timestamps drift.
 
 5. **Info. The EOA rule depends on Rootstock not having EIP-7702.** With EIP-7702, an EOA can run code, and `msg.sender == tx.origin` no longer proves call depth 1. Handled: no code change. Read ADR 0001 again if Rootstock adds EIP-7702.
 
-6. **Info. The owner can add a drand config with any valid G2 key.** A key that the owner controls makes the drand part of Alpha known in advance. The owner can already upgrade the contract, so this adds no new power. The spec names `upgrade` as the trust boundary. Handled: no code change.
+6. **Info. The Admin can add a drand config with any valid G2 key.** A key that the Admin controls makes the drand part of Alpha known in advance. The Admin can already upgrade the contract, so this adds no new power. The spec names `upgrade` as the trust boundary. Handled: no code change.
 
 7. **Info. Any EOA can copy a proof from the mempool and submit it.** Beta, the Payee credit and the callback are the same. Only the `fulfiller` field of `Fulfilled` changes. Handled: no code change.
 
