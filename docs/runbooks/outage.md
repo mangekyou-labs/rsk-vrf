@@ -282,6 +282,8 @@ Post the Incident Note **not more than 24 hours after the Deadline**.
 
    If `proof` was `null`, post the note now without the proof, and add the proof when the worker has it.
 
+   For a planned outage window (both workers stopped on purpose, announced in advance), do steps 1 and 2 for each request of the window, skip step 3, and post one note for all of them. Use the [planned outage window template](#incident-note-template-planned-outage-window) and the title `Planned outage window: <start block> to <end block>`.
+
    Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue, and its time is less than 24 hours after the Deadline.
 
 ### Incident Note template: missed Deadline
@@ -316,6 +318,50 @@ The script reads the request and the Proving Key from the chain and the drand si
 ## What we changed
 
 <Change, so that this does not occur again.>
+````
+
+### Incident Note template: planned outage window
+
+````markdown
+## What happened
+
+From block <start block> to block <end block> (<time, UTC> to <time, UTC>), both workers were stopped on purpose. We announced the window in advance: <link to the announcement>. Only demo requests were in flight.
+
+These requests missed their Deadline. Each one was refunded with `timeoutRefund`, and the `missed_deadline` Page for each one was expected and acknowledged.
+
+| requestId | Deadline block | Refund transaction |
+| --- | --- | --- |
+| <requestId> | <deadline> | <explorer link> |
+
+<No request outside the window missed its Deadline. | List each one outside the window and link its note.>
+
+## Withheld proofs
+
+The worker had these outputs. They were not sent on chain.
+
+### Request <requestId>
+
+- keyHash: <keyHash> (Proving Key <keyId>)
+- Beta: <beta>
+
+```json
+<the `proof` object from missed-<requestId>.json>
+```
+
+<Repeat for each request of the window.>
+
+Check each proof yourself, from a clone of the repository (Node 24 or later). Save the `proof` object as `proof.json`, then:
+
+```sh
+npm ci --prefix worker
+RPC_URL=https://public-node.testnet.rsk.co npm run demo:check-withheld-proof --prefix worker -- "$PWD/proof.json"
+```
+
+The script reads the request and the Proving Key from the chain and the drand signature from the relay. It ends with `RESULT {"valid":true,...}`.
+
+## What we changed
+
+<Nothing, because the window was planned. | Changes to this runbook from the window.>
 ````
 
 ## 6. Other Pages
@@ -367,5 +413,5 @@ At <time, UTC>, the worker on <primary|backup> sent a `<alert name>` Page. Cause
   - It also accepts only the `proof` object, and it refuses a changed proof.
 - `worker/integration/watchdog.test.ts` covers the alerts of each section: `low_balance`, `top_up_balance`, `drand_stall`, `pending_age`, `node_unhealthy`, `rpc_unhealthy`, `missed_deadline` with the proof in the Page and the JSON log line, and no Page for a refund after a Revocation.
 - `worker/integration/watchdog.test.ts` ("stops the healthchecks.io heartbeat when the node stops answering") and `worker/test/loop.test.ts` cover the Dead-man's Switch: a heartbeat only after a completed poll, and no heartbeat after a failed or stalled poll. `worker/integration/regtest.test.ts` covers the Backup Worker with `GRACE_BLOCKS` 100 and a drand stall with no refund.
-- Dry run only (no AWS account, Terraform, healthchecks.io or live drand stall on the walkthrough machine): sections 1 to 4 and section 6. The commands come from [infra/README.md](../../infra/README.md) and the alert names from `worker/src/worker.ts`. Do them on testnet at the pre-demo drill and correct this runbook.
+- Dry run only (no AWS account, Terraform, healthchecks.io or live drand stall on the walkthrough machine): sections 1 to 4 and section 6. The commands come from [infra/README.md](../../infra/README.md) and the alert names from `worker/src/worker.ts`. Do them on testnet at the pre-demo drill, log each step in [drill-log.md](drill-log.md), and correct this runbook.
 - Fixes folded in: the `demo:check-withheld-proof` script accepts the Page, the log line, or only the `proof` object.
