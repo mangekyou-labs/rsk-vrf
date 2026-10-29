@@ -1,6 +1,6 @@
 # Rootstock VRF Service: Build Spec
 
-> **Unaudited testnet pilot; do not use for value.**
+> **Testnet pilot, not externally audited; do not use for value.**
 
 This spec turns the closed [Wayfinder map](https://github.com/mangekyou-labs/rsk-vrf/issues/1) into a build plan. Each decision lives in its ticket; this document gathers what a builder needs and links the ticket for the reasoning. Where a ticket and this spec disagree, the ticket wins and this spec is the bug. Terms are as defined in [`GLOSSARY.md`](../GLOSSARY.md).
 
@@ -37,7 +37,7 @@ From [Coordinator Contract Boundaries and Fulfill Error Set](https://github.com/
 
 - **`VRFCoordinator`**: a single contract behind a UUPS proxy (ERC-1967) with ERC-7201 namespaced storage. It uses `Ownable2Step` (upgradeable) and is owned by the Admin Safe. It has no `pause`: revoking the Active Key is the emergency stop. It inherits `VRF.sol`, verifies drand through an internal `DrandEvmnet` library over `BLS.sol`, and keeps the Key Registry in its own storage.
 - **`VRF.sol`**: vendored **unmodified** from `chainlink-evm@23aa976` (MIT, ships the upstream LICENSE). CI pins its git blob hash `0aa7ffe`. See [Verifier Source and License](https://github.com/mangekyou-labs/rsk-vrf/issues/13).
-- **`BLS.sol` + `ModExp.sol`**: vendored unmodified from `kevincharm/bls-bn254@9f70fb4` (MIT, unaudited), also blob-hash pinned.
+- **`BLS.sol` + `ModExp.sol`**: vendored unmodified from `kevincharm/bls-bn254@9f70fb4` (MIT, not externally audited), also blob-hash pinned.
 - **`VRFDerivation`**: a pure internal library and the only derivation code path. Consumers and the coordinator both use it.
 - **`VRFConsumer`**: an abstract base for callback consumers.
 

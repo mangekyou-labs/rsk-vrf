@@ -1,6 +1,6 @@
 # Demo walkthrough
 
-Unaudited testnet pilot; do not use for value.
+Testnet pilot, not externally audited; do not use for value.
 
 The scripts in `worker/demo/` drive a deployed coordinator end to end. Each script prints that banner, an explorer link for every transaction it sends, an `ok:` line for each check it asserts, and a final `RESULT {json}` line. A failed check prints `FAILED` and exits 1.
 
