@@ -10,7 +10,7 @@ import { createPublicClient, createWalletClient, defineChain, encodeAbiParameter
 import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorAbi } from '../src/coordinator.ts';
 import { ProvingKey } from '../src/proving-key.ts';
-import { createWorker, type DrandPin } from '../src/worker.ts';
+import { createWorker, REFUND_REASON, type DrandPin } from '../src/worker.ts';
 
 // The operator tools the runbooks in docs/runbooks/ call, run on real rskj regtest.
 const rpcUrl = process.env.RSK_RPC_URL ?? 'http://127.0.0.1:4449';
@@ -28,7 +28,6 @@ const fixture = JSON.parse(readFileSync(new URL('../../tools/vrf-vectors-go/coor
 const artifact = (name: string) => JSON.parse(readFileSync(new URL(`../../contracts/out/${name}.sol/${name}.json`, import.meta.url), 'utf8')) as { abi: Abi; bytecode: { object: Hex } };
 const ownableAbi = parseAbi(['function acceptOwnership()']);
 const KeyState = { Active: 1, Draining: 2, Revoked: 3, Retired: 4 } as const;
-const RefundReason = { Deadline: 0, KeyRevoked: 1 } as const;
 
 async function mine() { await client.request({ method: 'evm_mine' as never, params: [] as never }); }
 async function mineTo(target: bigint) { while (await client.getBlockNumber({ cacheTime: 0 }) < target) await mine(); }
@@ -115,7 +114,7 @@ describe('runbook tools on real rskj', { concurrency: 1 }, () => {
       assert.notEqual(early.code, 0, 'a proposal the Safe cannot yet execute is refused');
       assert.match(early.output, /reverts/);
       assert.equal(early.stdout, '', 'a refused proposal prints no transaction to sign');
-      // The hand-off of docs/development/deploy.md, step 3.
+      // The hand-off of docs/development/deploy.md, section 4.
       const accept = await safeTx(record, 'accept-ownership');
       assert.equal(accept.code, 0, accept.output);
       const acceptTx = proposal(accept.stdout);
@@ -153,10 +152,10 @@ describe('runbook tools on real rskj', { concurrency: 1 }, () => {
       await execute(safe, proposal(revoke.stdout));
       assert.equal(await keyState(coordinator, onOld.record.keyId), KeyState.Revoked);
       const stillPending = await pending(record, oldKey.keyHash);
-      assert.equal(stillPending.stdout.trim().split(/\s+/)[0], onOld.requestId, 'a request of a Revoked key stays Pending until someone refunds it');
+      assert.equal(stillPending.stdout.trim().split(/\s+/)[0], onOld.requestId, 'a request of a Revoked Key stays Pending until someone refunds it');
       const refund = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'timeoutRefund', args: [onOld.requestId], gas: 200_000n, gasPrice: 1n }));
       const [refunded] = parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refund.logs });
-      assert.equal(refunded!.args.reason, RefundReason.KeyRevoked, 'refunded before its Deadline as a Revocation Refund');
+      assert.equal(refunded!.args.reason, REFUND_REASON.KEY_REVOKED, 'refunded before its Deadline as a Revocation Refund');
       const after = await pending(record, oldKey.keyHash);
       assert.equal(after.code, 0, after.output);
       assert.equal(after.stdout.trim(), '', 'nothing is left pending');
@@ -201,7 +200,7 @@ describe('runbook tools on real rskj', { concurrency: 1 }, () => {
       await receipt(sent!.transactionHash!);
       await mineTo(BigInt(refunded.record.deadline) + 1n);
       const refund = await receipt(await wallet.writeContract({ address: coordinator, abi: coordinatorAbi, functionName: 'timeoutRefund', args: [refunded.requestId], gas: 200_000n, gasPrice: 1n }));
-      assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refund.logs })[0]!.args.reason, RefundReason.Deadline);
+      assert.equal(parseEventLogs({ abi: coordinatorAbi, eventName: 'Refunded', logs: refund.logs })[0]!.args.reason, REFUND_REASON.DEADLINE);
       await mineTo(BigInt(late.record.deadline) + 1n);
 
       mkdirSync(deploymentsDir, { recursive: true });

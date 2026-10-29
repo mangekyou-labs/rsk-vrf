@@ -37,7 +37,7 @@ Pending request: <requestId>, Deadline block <deadline>.
 | Make the request | outage.md 8.1.3, [demo.md](../demo.md) `dice` | <start> | <end> | <block> | <link> | <outcome> | <change> |
 | Backup Worker fulfills the request | outage.md 8.1.3 | <start> | <end> | <block> | <link> | <outcome> | <change> |
 | Restart the Primary Worker | outage.md 8.1.4 | <start> | <end> | <block> | none | <outcome> | <change> |
-| Post the Incident Note | outage.md 1.5 | <start> | <end> | <block> | none | <link to the issue> | <change> |
+| Post the Incident Note | outage.md 8.1 | <start> | <end> | <block> | none | <link to the issue> | <change> |
 
 Blocks from the request to the fulfillment: <n> (`GRACE_BLOCKS` is 100).
 
@@ -58,7 +58,7 @@ Pending request: <requestId>, bound to Proving Key <oldId>, Deadline block <dead
 | Both workers hold both keys | rotation.md 6.1 | <start> | <end> | <block> | none | <outcome> | <change> |
 | Test request under the new keyHash | rotation.md 6.2 | <start> | <end> | <block> | <link> | <outcome> | <change> |
 | The pending request is Fulfilled with the old key | rotation.md 6.3 | <start> | <end> | <block> | <link> | <outcome> | <change> |
-| Delete the online secret of the Retired key | rotation.md 7 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Delete the online secret of the Retired Key | rotation.md 7 | <start> | <end> | <block> | none | <outcome> | <change> |
 | Post the public note | rotation.md 8 | <start> | <end> | <block> | none | <link to the issue> | <change> |
 
 New Active Key: <newId>, keyHash <NEW>, from block <block>.
@@ -76,7 +76,7 @@ Pending request: <requestId>, bound to Proving Key <keyId>, Deadline block <dead
 | `key_registry_changed` Page from both workers | compromise.md 1.1 | <start> | <end> | <block> | none | <outcome> | <change> |
 | Rotation to a new Active Key | compromise.md 1.2 | <start> | <end> | <block> | <link> | <outcome> | <change> |
 | Refund the pending request (`timeoutRefund`, reason KeyRevoked) | compromise.md 1.3 | <start> | <end> | <block> | <link> | <outcome> | <change> |
-| Delete the secret of the Revoked key | compromise.md 1.4.1 | <start> | <end> | <block> | none | <outcome> | <change> |
+| Delete the secret of the Revoked Key | compromise.md 1.4.1 | <start> | <end> | <block> | none | <outcome> | <change> |
 | CloudTrail review | compromise.md 1.4.2 | <start> | <end> | <block> | none | <outcome> | <change> |
 | Post the Incident Note | compromise.md 1.5 | <start> | <end> | <block> | none | <link to the issue> | <change> |
 

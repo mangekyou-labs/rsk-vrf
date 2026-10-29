@@ -69,9 +69,10 @@ const MAX_IN_FLIGHT = 8;
 const REPLACEMENT_DELAY = 3n;
 const SELF_GAS = 21_000n;
 export const RESERVE_FULFILLS = 20n;
-const REFUND_REASON = { DEADLINE: 0, KEY_REVOKED: 1 } as const;
+/** The coordinator's RefundReason ordinals. */
+export const REFUND_REASON = { DEADLINE: 0, KEY_REVOKED: 1 } as const;
 
-/** How a request missed its Deadline as of block `latest`, as the watchdog pages it: still Pending past it, or refunded on the Deadline branch. A Revocation Refund is not a miss. */
+/** How a request missed its Deadline as of block `latest`, as the watchdog Pages it: still Pending past it, or refunded on the Deadline branch. A Revocation Refund is not a miss. */
 export function deadlineMiss(request: { status: number; deadline: number }, refundReason: number | undefined, latest: bigint): 'Pending' | 'Refunded' | undefined {
   if (request.status === REQUEST_STATUS.PENDING && latest > BigInt(request.deadline)) return 'Pending';
   if (request.status === REQUEST_STATUS.REFUNDED && refundReason === REFUND_REASON.DEADLINE) return 'Refunded';
