@@ -1,6 +1,6 @@
 // Demo: a consumer whose callback always reverts. The coordinator records
 // CallbackFailed, yet the request is Fulfilled and the fee is credited to the Payee.
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { encodeDeployData, encodeFunctionData, parseEventLogs, stringToHex, type Address } from 'viem';
 
 import { artifact, check, connect, coordinatorAbi, main, result, Status } from './lib.ts';

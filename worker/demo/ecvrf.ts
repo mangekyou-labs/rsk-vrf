@@ -1,7 +1,7 @@
 // An ECVRF verifier for recompute-beta, written straight from VRF.sol's
 // _verifyVRFProof with @noble/curves primitives. It deliberately shares no code
 // with the worker's prover, so a bug there cannot hide here.
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { concatBytes, hexToBytes } from '@noble/hashes/utils.js';

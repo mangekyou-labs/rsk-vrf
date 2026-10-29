@@ -3,7 +3,7 @@
 // need not be the Active key any more). When DEMO_PRIVATE_KEY is the Payee it sends
 // withdrawFees() itself; otherwise (the Payee is the Admin Safe) it prints the Safe
 // transaction and exits 3, and rerun with WITHDRAW_TX it verifies that transaction.
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { encodeFunctionData, getAddress, parseEventLogs, type Address, type Hex, type TransactionReceipt } from 'viem';
 
 import { check, connect, coordinatorAbi, main, result } from './lib.ts';
