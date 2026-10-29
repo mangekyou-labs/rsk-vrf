@@ -1,19 +1,22 @@
 // Shared plumbing for the demo scripts: environment, the deployment record, contract
-// artifacts, explorer links and waiting for blocks. Unaudited testnet pilot code.
+// artifacts, explorer links and waiting for blocks. Testnet pilot code, not externally audited.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  concat, createPublicClient, createWalletClient, decodeErrorResult, decodeFunctionData, defineChain, encodeAbiParameters,
-  encodeFunctionData, http, keccak256, pad, parseEventLogs, sha256, stringToHex, toHex,
+  createPublicClient, createWalletClient, decodeErrorResult, decodeFunctionData, defineChain,
+  encodeFunctionData, http, parseEventLogs, stringToHex,
   type Abi, type Address, type Hex, type TransactionReceipt,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { coordinatorFromDeployment } from '../src/deployment.ts';
 import { EVMNET_CHAIN_HASH } from '../src/relays.ts';
+import type { Signature } from './derive.ts';
 
-export const BANNER = 'Unaudited testnet pilot; do not use for value.';
+export { alphaOf, type Signature } from './derive.ts';
+
+export const BANNER = 'Testnet pilot, not externally audited; do not use for value.';
 export const REGTEST = 33;
 export const Status = { None: 0, Pending: 1, Fulfilled: 2, Refunded: 3 } as const;
 
@@ -43,9 +46,6 @@ export interface OnChainProof {
   cGammaWitness: readonly [bigint, bigint]; sHashWitness: readonly [bigint, bigint]; zInv: bigint;
 }
 
-/** A drand BLS signature on BN254, as fulfill takes it. */
-export type Signature = readonly [bigint, bigint];
-
 /** The arguments of a fulfill transaction's calldata. */
 export function decodeFulfill(input: Hex): { requestId: Hex; proof: OnChainProof; signature: Signature } {
   const [requestId, proof, signature] = decodeFunctionData({ abi: coordinatorAbi, data: input }).args as unknown as [Hex, OnChainProof, Signature];
@@ -55,20 +55,6 @@ export function decodeFulfill(input: Hex): { requestId: Hex; proof: OnChainProof
 /** fulfill calldata for a request, proof and drand signature. */
 export function encodeFulfill(requestId: Hex, proof: OnChainProof, signature: Signature): Hex {
   return encodeFunctionData({ abi: coordinatorAbi, functionName: 'fulfill', args: [requestId, proof as never, signature as never] });
-}
-
-const word = (n: bigint) => pad(toHex(n), { size: 32 });
-
-/**
- * Alpha as the coordinator builds it: keccak256(abi.encode("rsk-vrf/v1/alpha" domain,
- * chainId, coordinator, requester, requestId, targetRound, sha256(drand signature))).
- */
-export function alphaOf(input: { chainId: number; coordinator: Address; requester: Address; requestId: Hex; targetRound: bigint; signature: Signature }): Hex {
-  const randomness = sha256(concat([word(input.signature[0]), word(input.signature[1])]));
-  return keccak256(encodeAbiParameters(
-    [{ type: 'bytes32' }, { type: 'uint256' }, { type: 'address' }, { type: 'address' }, { type: 'bytes32' }, { type: 'uint64' }, { type: 'bytes32' }],
-    [keccak256(stringToHex('rsk-vrf/v1/alpha')), BigInt(input.chainId), input.coordinator, input.requester, input.requestId, input.targetRound, randomness],
-  ));
 }
 
 /** The drand signature a relay publishes for a round, waiting up to `attempts` polls for it. */

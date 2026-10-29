@@ -72,7 +72,7 @@ async function demo(script: string, env: Record<string, string> = {}) {
 }
 
 function assertPresented(output: string, transactions: Hex[]) {
-  assert.match(output, /Unaudited testnet pilot; do not use for value\./, 'prints the pilot banner');
+  assert.match(output, /Testnet pilot, not externally audited; do not use for value\./, 'prints the pilot banner');
   for (const hash of transactions) assert.ok(output.includes(hash), `prints a link for ${hash}`);
 }
 

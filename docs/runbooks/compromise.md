@@ -4,7 +4,7 @@ Use this runbook when a secret or a signer is possibly exposed. There are three 
 
 1. [The Proving Key leaked](#1-the-proving-key-leaked). Do Revocation first.
 2. [A Fulfiller key leaked](#2-a-fulfiller-key-leaked). Nothing changes on chain.
-3. [The device of an Admin Safe owner is lost](#3-the-device-of-an-admin-safe-owner-is-lost).
+3. [The device of an Admin Safe signer is lost](#3-the-device-of-an-admin-safe-signer-is-lost).
 
 Signs of a leaked Proving Key are a `foreign_fulfillment` Page (a Fulfiller that is not in `OWN_FULFILLER_ADDRESSES` fulfilled a request) or an access to `rsk-vrf/proving-key/*` that is not from a host role. If you are not sure, treat the key as leaked. A Revocation that was not necessary costs one Rotation. A leaked key that stays Active can do a Selective Abort.
 
@@ -207,17 +207,17 @@ From block <block> to block <block>, the <other> worker fulfilled the requests. 
 The new Fulfiller is <new address>.
 ```
 
-## 3. The device of an Admin Safe owner is lost
+## 3. The device of an Admin Safe signer is lost
 
-The Admin Safe is 2-of-3. One lost device does not let anyone act as Admin alone, but a second loss stops the Admin. Replace the owner at once.
+The Admin Safe is 2-of-3. One lost device does not let anyone act as Admin alone, but a second loss stops the Admin. Replace the signer at once.
 
-1. **Replace the owner.** The two remaining owners use safe.rootstock.io: **Settings**, then **Setup**, then **Manage signers**, then **Replace signer** on the lost owner. Enter the new owner address (a new hardware signer). Keep the threshold at 2. Both owners sign and execute.
+1. **Replace the signer.** The two remaining signers use safe.rootstock.io: **Settings**, then **Setup**, then **Manage signers**, then **Replace signer** on the lost signer. Enter the address of the new signer (a new hardware wallet). Keep the threshold at 2. Both remaining signers sign and execute.
 
    Verify:
 
    ```sh
    SAFE=$(jq -r .safe "$RECORD")
-   cast call --rpc-url "$RPC_URL" "$SAFE" 'getOwners()(address[])'     # the two remaining owners and the new owner
+   cast call --rpc-url "$RPC_URL" "$SAFE" 'getOwners()(address[])'     # the two remaining signers and the new signer
    cast call --rpc-url "$RPC_URL" "$SAFE" 'getThreshold()(uint256)'    # 2
    cast call --rpc-url "$RPC_URL" "$PROXY" 'owner()(address)'          # still the Admin Safe
    ```
@@ -226,16 +226,30 @@ The Admin Safe is 2-of-3. One lost device does not let anyone act as Admin alone
 
    Verify: each transaction since the loss has two known signers. If a Key Registry change is not explained, do [section 1](#1-the-proving-key-leaked) for the key it added.
 
-3. **Post a short Incident Note.**
+3. **Post a short Incident Note.** Use the template below.
 
    ```sh
    gh issue create --repo mangekyou-labs/rsk-vrf --label incident \
-     --title "Admin Safe owner replaced" --body-file safe-owner-note.md
+     --title "Admin Safe signer replaced" --body-file safe-signer-note.md
    ```
 
-   Body: the date, the old and new owner addresses, the replacement transaction link, and the result of step 2.
-
    Verify: `gh issue list --repo mangekyou-labs/rsk-vrf --label incident --limit 1` shows the issue.
+
+### Incident Note template: Admin Safe signer
+
+```markdown
+## What happened
+
+On <date, UTC> the device of one Admin Safe signer (<old signer address>) was lost. The Admin Safe is 2-of-3, so one signer alone cannot act as Admin.
+
+- Replacement transaction: <explorer link>
+- New signer: <new signer address>
+- Threshold: 2 of 3
+
+## Effect on the coordinator
+
+<Each Admin Safe transaction since the loss has two known signers. | List each transaction that was not expected, and link the Revocation note.>
+```
 
 ## Walkthrough record
 

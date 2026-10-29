@@ -3,6 +3,7 @@
 # runbooks in docs/runbooks/. It first does an eth_call of the transaction from the Admin
 # Safe, so a transaction that would revert is never given to the signers.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/deployment-env.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -16,12 +17,9 @@ EOF
 }
 
 [ $# -ge 2 ] && [ -n "${RPC_URL:-}" ] || usage
-record=$1 action=$2
+deployment_file=$1 action=$2
 shift 2
-proxy=$(jq -er .contracts.proxy.address "$record")
-safe=$(jq -er .safe "$record")
-chain_id=$(jq -er .chainId "$record")
-[ "$(cast chain-id --rpc-url "$RPC_URL")" = "$chain_id" ] || { echo "RPC_URL is not chain $chain_id of $record" >&2; exit 1; }
+load_deployment "$deployment_file"
 
 case "$action" in
   register)

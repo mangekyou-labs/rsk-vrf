@@ -6,7 +6,7 @@
 // proof and changes exactly one thing per case. On other chains it has no key, so the
 // cases are built from A's proof and are not isolated: the corrupted proofs are also
 // over the wrong Alpha. The first failing check is the same either way.
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { readFileSync } from 'node:fs';
 
 import type { Hex } from 'viem';

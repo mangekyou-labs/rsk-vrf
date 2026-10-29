@@ -5,13 +5,14 @@
 // DRAND_RELAY_URL (default: the evmnet relay) publishes for the target round, that the
 // ECVRF proof verifies over the recomputed Alpha (./ecvrf.ts), and that Beta follows.
 // Usage: RPC_URL=<rpc> node demo/check-withheld-proof.ts <file>
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { readFileSync } from 'node:fs';
 
-import { concat, createPublicClient, encodeAbiParameters, getAddress, http, keccak256, pad, stringToHex, toHex, type Address, type Hex } from 'viem';
+import { createPublicClient, getAddress, http, type Address, type Hex } from 'viem';
 
+import { alphaOf, betaOf, keyHashOf } from './derive.ts';
 import { verify } from './ecvrf.ts';
-import { BANNER, Status, alphaOf, check, coordinatorAbi, drandRelay, drandSignature, main, result } from './lib.ts';
+import { BANNER, Status, check, coordinatorAbi, drandRelay, drandSignature, main, result } from './lib.ts';
 
 interface Published {
   chainId: string; coordinator: Address; requester: Address; requestId: Hex; targetRound: string; signature: Hex;
@@ -19,7 +20,6 @@ interface Published {
   proof: { pk: string[]; gamma: string[]; c: string; s: string; uWitness: string };
 }
 
-const word = (n: bigint) => pad(toHex(n), { size: 32 });
 const pair = (values: string[]) => [BigInt(values[0]!), BigInt(values[1]!)] as const;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
@@ -47,7 +47,7 @@ main(async () => {
 
   const proof = { pk: pair(published.proof.pk), gamma: pair(published.proof.gamma), c: BigInt(published.proof.c), s: BigInt(published.proof.s), uWitness: published.proof.uWitness };
   const { keyHash } = await read<{ keyHash: Hex }>('getProvingKey', [request.keyId]);
-  check(same(keyHash, published.keyHash) && same(keccak256(concat([word(proof.pk[0]), word(proof.pk[1])])), keyHash),
+  check(same(keyHash, published.keyHash) && same(keyHashOf(proof.pk), keyHash),
     `the proof's public key is the registered Proving Key ${request.keyId} of the request`);
 
   const relay = drandRelay();
@@ -59,7 +59,7 @@ main(async () => {
   check(same(alpha, published.alpha), `Alpha is ${alpha}`);
   const verified = verify(proof, BigInt(alpha));
   check(verified.valid, 'the proof (Gamma, c, s) verifies over Alpha and the Proving Key');
-  const beta = keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'bytes32' }], [keccak256(stringToHex('rsk-vrf/v1/beta')), word(verified.output)]));
+  const beta = betaOf(verified.output);
   check(same(beta, published.beta), `Beta is ${beta}`);
   result({ valid: true, requestId: published.requestId, keyHash, beta, status: request.status === Status.Refunded ? 'Refunded' : 'Pending' });
 });

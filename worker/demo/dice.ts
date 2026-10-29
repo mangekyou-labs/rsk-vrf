@@ -1,6 +1,6 @@
 // Demo: a consumer contract rolls a die. Its callback stores the verified Beta and the
 // face comes from the coordinator's deriveRandomInRange(1, 6).
-// Unaudited testnet pilot; do not use for value.
+// Testnet pilot, not externally audited; do not use for value.
 import { encodeDeployData, encodeFunctionData, parseEventLogs, stringToHex, type Address, type Hex } from 'viem';
 
 import { artifact, check, connect, main, result } from './lib.ts';

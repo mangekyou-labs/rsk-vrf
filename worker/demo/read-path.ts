@@ -1,5 +1,5 @@
 // Demo: an EOA requests randomness with no callback and reads it back through the
-// coordinator's derive views. Unaudited testnet pilot; do not use for value.
+// coordinator's derive views. Testnet pilot, not externally audited; do not use for value.
 import { stringToHex, type Hex } from 'viem';
 
 import { check, connect, describeRevert, main, result } from './lib.ts';
