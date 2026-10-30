@@ -1,0 +1,76 @@
+{
+  "chainId": 31,
+  "commit": "07c5216d71b305ed5b813fc4cffa21c7adba2754",
+  "deployer": "0xed37fd0d6f0f69236e7472b36796e133d20ecc32",
+  "safe": "0x4d1770bb827d0489eb5dacb949e5fe6258ad7fcc",
+  "contracts": {
+    "implementation": {
+      "address": "0x999f07992e85c911b45e2dffb6a56809db1beeb9",
+      "block": 8235894,
+      "txHash": "0x765afd457b43b635645569d4e7121f9f9a9f3ba14111dfe1afce3f4bfb82217c",
+      "verification": {
+        "blockscout": "https://rootstock-testnet.blockscout.com/address/0x999f07992e85c911b45e2dffb6a56809db1beeb9?tab=contract",
+        "sourcify": "https://repo.sourcify.dev/31/0x999f07992e85c911b45e2dffb6a56809db1beeb9"
+      }
+    },
+    "proxy": {
+      "address": "0xc977abf5f9c529c39dac9306998ec130439150c0",
+      "block": 8235896,
+      "txHash": "0xa0078aea2ee6acf15ca019146d5ac4c94dc5dc686a977122354c3e2f238133a8",
+      "verification": {
+        "blockscout": "https://rootstock-testnet.blockscout.com/address/0xc977abf5f9c529c39dac9306998ec130439150c0?tab=contract",
+        "sourcify": "https://repo.sourcify.dev/31/0xc977abf5f9c529c39dac9306998ec130439150c0"
+      }
+    }
+  },
+  "transactions": [
+    {
+      "function": "registerProvingKey(uint256[2],address)",
+      "txHash": "0x6dc8a1568c82a39032c4a98a4519d54720d931e8566e8299327a53f1b9465385",
+      "block": 8235897
+    },
+    {
+      "function": "setFeeConfig(uint256)",
+      "txHash": "0x37b131db23aaf4a9948583d3f8fb7cc4d9f7afce3399dbffe22dee6b2a1005f1",
+      "block": 8235898
+    },
+    {
+      "function": "setCallbackGasCap(uint256)",
+      "txHash": "0x6c800e97432fad930887e6acf59fef6892c9dc4585f7ac14df0850b2e68aaff2",
+      "block": 8235900
+    },
+    {
+      "function": "transferOwnership(address)",
+      "txHash": "0x26b73daa9bb94dff1b8f59dee4f759666bb2eb145776430b7ba8828b0e691c2d",
+      "block": 8235901
+    }
+  ],
+  "config": {
+    "callbackGasCap": 200000,
+    "confirmations": 12,
+    "drand": {
+      "beacon": "evmnet",
+      "chainHash": "0x04f1e9062b8a81f848fded9c12306733282b2727ecced50032187751166ec8c3",
+      "genesis": 1727521075,
+      "period": 3,
+      "publicKey": [
+        "0x0557ec32c2ad488e4d4f6008f89a346f18492092ccc0d594610de2732c8b808f",
+        "0x07e1d1d335df83fa98462005690372c643340060d205306a9aa8106b6bd0b382",
+        "0x297d3a4f9749b33eb2d904c9d9ebf17224150ddd7abd7567a9bec6c74480ee0b",
+        "0x0095685ae3a85ba243747b1b2f426049010f6b73a0cf1d389351d5aaaa1047f6"
+      ]
+    },
+    "fee": 20000000000000,
+    "provingKey": {
+      "keyHash": "0x7d6f4296bb1144795d1b990b83dba93f7850213fa8f47a92cc386d83ae197209",
+      "keyId": 1,
+      "payee": "0x4d1770bb827d0489eb5dacb949e5fe6258ad7fcc",
+      "publicKey": [
+        "0x6b25ac51926d20d0358a3f23066401049cc5821b96949ec4487281ad871d460d",
+        "0xbbe1e1f1c3d8f6ae92142ddcbab2cad1e719c366281dba7b46f90b27044aa3ff"
+      ]
+    },
+    "roundOffset": 40,
+    "timeoutBlocks": 1200
+  }
+}
