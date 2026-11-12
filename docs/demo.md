@@ -89,28 +89,28 @@ Testnet pilot, not externally audited; do not use for value.
 
 | Field | Value |
 | --- | --- |
-| Date (UTC) | <date> |
-| Coordinator (proxy) | <explorer link> |
-| Active Key | <keyId>, keyHash <keyHash> |
-| Drill log | <link to the drill log, see [runbooks/drill-log.md](runbooks/drill-log.md)> |
+| Date (UTC) | 2026-11-09 to 2026-11-12 |
+| Coordinator (proxy) | [`0xC977ABf5F9c529C39dac9306998eC130439150c0`](https://rootstock-testnet.blockscout.com/address/0xC977ABf5F9c529C39dac9306998eC130439150c0) |
+| Active Key | 3, keyHash `0xb1dc0f72ca374a0a1cae775345dfc5f7a00b6dc22f461339fe37222eeda1679a` |
+| Drill log | [#77](https://github.com/mangekyou-labs/rsk-vrf/issues/77) |
 
 | Scenario | Script | What the link shows | Explorer link |
 | --- | --- | --- | --- |
-| On-chain verification | `dice` | The fulfill transaction: the coordinator verifies the proof and stores Beta | <explorer link> |
-| Deterministic output | `recompute-beta` | The fulfill transaction whose Beta the script recomputes (`proofVerified: true`) | <explorer link> |
-| Callback path | `dice` | The fulfill transaction that emits `Rolled` | <explorer link> |
-| Read path | `read-path` | The fulfill transaction of the request that the script reads with `deriveRandomBytes` | <explorer link> |
-| Fee settlement: fee credited | `reverting-consumer` | The fulfill transaction that emits `CallbackFailed` and credits the fee to the Payee | <explorer link> |
-| Fee settlement: fees withdrawn | `withdraw-fees` | The transaction that emits `FeesWithdrawn` | <explorer link> |
-| Timeout Refund | `timeoutRefund` after the outage window | The refund transaction (see the outage Incident Note) | <explorer link> |
-| Rejection: invalid, corrupted gamma | `rejections` | Reverted with `gamma is not on curve` | <explorer link> |
-| Rejection: invalid, corrupted s | `rejections` | Reverted with `addr(c*pk+s*g)!=_uWitness` | <explorer link> |
-| Rejection: mismatched, A's proof on B | `rejections` | Reverted with `Second mul check failed` | <explorer link> |
-| Rejection: mismatched, wrong drand round | `rejections` | Reverted with `InvalidDrandSignature` | <explorer link> |
-| Rejection: repeated, on Fulfilled A | `rejections` | Reverted with `RequestNotPending(2)` | <explorer link> |
+| On-chain verification | `dice` | The fulfill transaction: the coordinator verifies the proof and stores Beta | [`0xe5ce6dfa…`](https://rootstock-testnet.blockscout.com/tx/0xe5ce6dfaa5450945b8d0647537dddbbb12efd879ca82ad8c34c6ffcb98353f8c) |
+| Deterministic output | `recompute-beta` | The fulfill transaction whose Beta the script recomputes (`proofVerified: true`) | [`0xdcdd10c8…`](https://rootstock-testnet.blockscout.com/tx/0xdcdd10c8d54edd1531d5270a1674e153654493f2018b752ace225f0b4e0def6c) |
+| Callback path | `dice` | The fulfill transaction that emits `Rolled` | [`0xe5ce6dfa…`](https://rootstock-testnet.blockscout.com/tx/0xe5ce6dfaa5450945b8d0647537dddbbb12efd879ca82ad8c34c6ffcb98353f8c) |
+| Read path | `read-path` | The fulfill transaction of the request that the script reads with `deriveRandomBytes` | [`0x4a4b654d…`](https://rootstock-testnet.blockscout.com/tx/0x4a4b654d0f620b88cf160d7f3394c4e74b05d3bd7039821f41d5f5a59fda6ad9) |
+| Fee settlement: fee credited | `reverting-consumer` | The fulfill transaction that emits `CallbackFailed` and credits the fee to the Payee | [`0x86f45581…`](https://rootstock-testnet.blockscout.com/tx/0x86f455816909e5633f45d8b6c8931942764c2fe13c1fe678b0aafc9031e5315d) |
+| Fee settlement: fees withdrawn | `withdraw-fees` | The transaction that emits `FeesWithdrawn` | [`0x8161b630…`](https://rootstock-testnet.blockscout.com/tx/0x8161b6301b9f06f4f96cffa7a3104d3c6fe8c524d589763052a77e260c1e53da) |
+| Timeout Refund | `timeoutRefund` after the outage window | The refund transaction (see the outage Incident Note, [#73](https://github.com/mangekyou-labs/rsk-vrf/issues/73)) | [`0xd132cb98…`](https://rootstock-testnet.blockscout.com/tx/0xd132cb984db6d2c16f0990df46e8c1c426224863a7bf366cf71394af87eb654e) |
+| Rejection: invalid, corrupted gamma | `rejections` | Reverted with `gamma is not on curve` | [`0xc0240c48…`](https://rootstock-testnet.blockscout.com/tx/0xc0240c488f30c943291ebc83e789bdbfab74d9f04208723f264771e322cc0c31) |
+| Rejection: invalid, corrupted s | `rejections` | Reverted with `addr(c*pk+s*g)!=_uWitness` | [`0x32f56360…`](https://rootstock-testnet.blockscout.com/tx/0x32f5636013a8dc93a05ee4e2d7a493b482fc3eb9deb5b115261348c968357147) |
+| Rejection: mismatched, A's proof on B | `rejections` | Reverted with `Second mul check failed` | [`0x7a0e1bad…`](https://rootstock-testnet.blockscout.com/tx/0x7a0e1bad7d773977695b543913e15cd7a1992b7a3eddfd8652e3799b6ddbc4ed) |
+| Rejection: mismatched, wrong drand round | `rejections` | Reverted with `InvalidDrandSignature` | [`0x57530530…`](https://rootstock-testnet.blockscout.com/tx/0x57530530be01f87dd6d1522bd500c8aad3934ccb6b0fe85dc301696e218bfae6) |
+| Rejection: repeated, on Fulfilled A | `rejections` | Reverted with `RequestNotPending(2)` | [`0xfec22bba…`](https://rootstock-testnet.blockscout.com/tx/0xfec22bba4ab50b07051dedb496127acc0c28f5baa4767c970bc519cab69f3f6d) |
 
-`rejections` reported `isolated: <true|false>` (see "Isolation" above).
+`rejections` reported `isolated: false`: chain 31 has no second Proving Key, so the cases are built from A's proof (see "Isolation" above).
 
-Missed Deadline count outside the announced outage window, from `missed-deadlines <record> <fromBlock> <toBlock> --exclude <window>`: <n> (target 0). <List each missed Deadline and link its Incident Note. | None.>
+Missed Deadline count outside the announced outage window, from `missed-deadlines <record> <fromBlock> <toBlock> --exclude <window>`, blocks 8235896 to 8287211: 3 (target 0). Each has an Incident Note: [#74](https://github.com/mangekyou-labs/rsk-vrf/issues/74), [#75](https://github.com/mangekyou-labs/rsk-vrf/issues/75), [#76](https://github.com/mangekyou-labs/rsk-vrf/issues/76).
 
 Outage window Incident Note: <link to the issue>.

@@ -5,7 +5,7 @@
 // Pages. Each --exclude <from>-<to> drops the requests whose Deadline is in that
 // announced window. Prints one line per miss, the count, and a RESULT line.
 // Usage: RPC_URL=<rpc> node demo/missed-deadlines.ts <deployment record> <fromBlock> <toBlock> [--exclude <from>-<to>]...
-// LOG_BLOCK_SPAN (default 5000) is the block range of each log read.
+// LOG_BLOCK_SPAN (default 2000, the eth_getLogs cap of common keyed chain 31 RPCs) is the block range of each log read.
 // Testnet pilot, not externally audited; do not use for value.
 import { readFileSync } from 'node:fs';
 
@@ -49,7 +49,7 @@ main(async () => {
   const coordinator = coordinatorFromDeployment(text, await client.getChainId());
   const createdAt = BigInt((JSON.parse(text) as { contracts: { proxy: { block: number } } }).contracts.proxy.block);
   const latest = await client.getBlockNumber();
-  const span = BigInt(process.env.LOG_BLOCK_SPAN ?? 5_000);
+  const span = BigInt(process.env.LOG_BLOCK_SPAN ?? 2_000);
   const windows = excluded.map(([from, to]) => `${from}..${to}`).join(', ');
   console.log(`coordinator ${coordinator} (from ${file}), Deadlines in blocks ${fromBlock}..${toBlock}${windows ? `, excluding ${windows}` : ''}, at block ${latest}`);
 

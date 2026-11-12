@@ -8,7 +8,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/deployment-env.sh"
 usage() {
   cat >&2 <<'EOF'
 Usage: RPC_URL=<rpc> contracts/script/pending-requests.sh <deployment record> <keyHash>
-  LOG_BLOCK_SPAN (default 5000) is the block range of each log read.
+  LOG_BLOCK_SPAN (default 2000, the eth_getLogs cap of common keyed chain 31 RPCs) is the
+  block range of each log read.
 EOF
   exit 2
 }
@@ -17,7 +18,9 @@ EOF
 deployment_file=$1 key_hash=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
 load_deployment "$deployment_file"
 latest=$(cast block-number --rpc-url "$RPC_URL")
-span=${LOG_BLOCK_SPAN:-5000}
+span=${LOG_BLOCK_SPAN:-2000}
+cast_err=$(mktemp)
+trap 'rm -f "$cast_err"' EXIT
 
 # Word indexes (from 0) in the ABI-encoded data that this script reads.
 # KeyRegistered(uint32 keyId, bytes32 keyHash, address payee)
@@ -34,12 +37,18 @@ REQUEST_DEADLINE=7
 STATUS_PENDING=1
 
 # All logs of one event from the proxy's creation block to the latest block, as one JSON array.
+# A failed read stops the script: an empty result would read as "no such key" or "0 Pending".
+# cast quotes the RPC URL in its errors, and a keyed URL is a secret, so it is redacted.
 logs() {
   local start=$proxy_block end
   while [ "$start" -le "$latest" ]; do
     end=$((start + span - 1))
     [ "$end" -le "$latest" ] || end=$latest
-    cast logs --rpc-url "$RPC_URL" --json --address "$proxy" --from-block "$start" --to-block "$end" "$1"
+    cast logs --rpc-url "$RPC_URL" --json --address "$proxy" --from-block "$start" --to-block "$end" "$1" 2>"$cast_err" || {
+      echo "cast logs failed for blocks $start..$end:" >&2
+      sed -E 's#https?://[^[:space:]"]*#<redacted-url>#g' "$cast_err" >&2
+      exit 1
+    }
     start=$((end + 1))
   done | jq -s 'add // []'
 }
@@ -59,9 +68,11 @@ state_names=(None Active Draining Revoked Retired)
 state=${state_names[$(cast to-dec "$(word "$proving_key_hex" "$PROVING_KEY_STATE")")]}
 echo "Proving Key $key_id ($key_hash) is $state" >&2
 
+# Assigned before the loop, so that set -e stops on a failed read.
+request_ids=$(logs 'RandomnessRequested(bytes32 indexed,address indexed,bytes32,uint32,uint64,uint48,uint48,uint96,uint32)' \
+  | jq -r --arg k "$key_id_word" --argjson id "$REQUESTED_KEY_ID" "$JQ_WORD"' .[] | select(word($id) == $k) | .topics[1]')
 count=0
-for request_id in $(logs 'RandomnessRequested(bytes32 indexed,address indexed,bytes32,uint32,uint64,uint48,uint48,uint96,uint32)' \
-  | jq -r --arg k "$key_id_word" --argjson id "$REQUESTED_KEY_ID" "$JQ_WORD"' .[] | select(word($id) == $k) | .topics[1]'); do
+for request_id in $request_ids; do
   request_hex=$(cast call --rpc-url "$RPC_URL" "$proxy" "$(cast calldata 'getRequest(bytes32)' "$request_id")")
   [ "$(cast to-dec "$(word "$request_hex" "$REQUEST_STATUS")")" = "$STATUS_PENDING" ] || continue
   deadline=$(cast to-dec "$(word "$request_hex" "$REQUEST_DEADLINE")")

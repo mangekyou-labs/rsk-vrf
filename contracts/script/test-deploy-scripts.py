@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Exercise write-deployment.py and verify.sh through their command-line interfaces.
+"""Exercise write-deployment.py, verify.sh and pending-requests.sh through their command-line interfaces.
 
 Needs `forge build` (for the coordinator ABI), cast and jq. verify.sh runs against a stub
-forge, so no explorer is contacted.
+forge and pending-requests.sh against a stub cast, so no explorer or RPC is contacted.
 """
 import json
 import os
@@ -15,6 +15,7 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parent
 WRITE = SCRIPTS / 'write-deployment.py'
 VERIFY = SCRIPTS / 'verify.sh'
+PENDING = SCRIPTS / 'pending-requests.sh'
 IMPLEMENTATION = '0x' + 'aa' * 20
 PROXY = '0x' + 'bb' * 20
 DEPLOYER = '0x' + 'cc' * 20
@@ -153,6 +154,62 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(self.log.read_text().count('--verifier sourcify'), 2, 'Sourcify still runs for both contracts')
         for entry in json.loads(self.record.read_text())['contracts'].values():
             self.assertEqual(list(entry['verification']), ['sourcify'])
+
+
+# Answers what pending-requests.sh asks before its first cast call: the chain, the latest
+# block and the logs. Each logs read is recorded; STUB_LOGS_FAIL makes them fail as a
+# rate-limited keyed RPC does, quoting the URL.
+STUB_CAST = '''#!/usr/bin/env bash
+case "$1" in
+  chain-id) echo 31 ;;
+  block-number) echo 4100 ;;
+  logs)
+    while [ $# -gt 0 ]; do case "$1" in --from-block) from=$2 ;; --to-block) to=$2 ;; esac; shift; done
+    echo "$from..$to" >> "$STUB_LOG"
+    [ -z "${STUB_LOGS_FAIL:-}" ] || { echo "Error: HTTP error 429 with body: rate limited, url: $RPC_URL" >&2; exit 1; }
+    echo '[]' ;;
+  *) exit 1 ;;
+esac
+'''
+KEYED_RPC = 'https://rpc.example/v1/s3cr3tk3y'
+KEY_HASH = '0x' + '12' * 32
+
+
+class PendingRequestsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        bin_dir = self.dir / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'cast').write_text(STUB_CAST)
+        (bin_dir / 'cast').chmod(0o755)
+        self.log = self.dir / 'cast.log'
+        self.env = {**os.environ, 'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}', 'STUB_LOG': str(self.log), 'RPC_URL': KEYED_RPC}
+        self.env.pop('LOG_BLOCK_SPAN', None)
+        deployment = record(31)
+        deployment['contracts']['proxy']['block'] = 100
+        self.record = self.dir / '31.json'
+        self.record.write_text(json.dumps(deployment))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pending(self, **env):
+        return subprocess.run([str(PENDING), str(self.record), KEY_HASH], env=self.env | env, capture_output=True, text=True)
+
+    def test_reads_logs_in_spans_of_2000_blocks_by_default(self):
+        result = self.pending()
+        self.assertEqual(self.log.read_text().split(), ['100..2099', '2100..4099', '4100..4100'])
+        self.assertIn(f'{KEY_HASH} is not a registered keyHash', result.stderr)
+
+    def test_a_failed_log_read_stops_without_naming_the_rpc_url(self):
+        result = self.pending(STUB_LOGS_FAIL='1')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.log.read_text().split(), ['100..2099'])
+        self.assertIn('cast logs failed for blocks 100..2099:', result.stderr)
+        self.assertIn('url: <redacted-url>', result.stderr)
+        self.assertNotIn('s3cr3tk3y', result.stderr)
+        self.assertNotIn('not a registered keyHash', result.stderr)
 
 
 if __name__ == '__main__':

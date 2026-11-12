@@ -13,6 +13,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { coordinatorFromDeployment } from '../src/deployment.ts';
 import { EVMNET_CHAIN_HASH } from '../src/relays.ts';
 import type { Signature } from './derive.ts';
+import { redactUrls, retrying } from './rpc.ts';
 
 export { alphaOf, type Signature } from './derive.ts';
 
@@ -179,20 +180,27 @@ export async function connect(script: string) {
     return (event.args as { requestId: Hex }).requestId;
   }
 
-  /** Waits for an operator's worker to fulfill, then returns the request and its fulfill transaction. */
+  /**
+   * Waits for an operator's worker to fulfill, then returns the request and its fulfill
+   * transaction. The wait can last many polls, so a transient RPC error costs a poll, not the
+   * demo; and the node's log index can lag the state it serves, so an empty read of the
+   * Fulfilled event is read again.
+   */
   async function waitFulfilled(requestId: Hex) {
     console.log(`waiting for the operator to fulfill ${requestId}`);
+    const tries = 10;
     for (;;) {
-      const request = await getRequest(requestId);
+      const request = await retrying(() => getRequest(requestId), nextBlock, tries, `getRequest(${requestId})`);
       if (request.status === Status.Fulfilled) {
-        const logs = await client.getContractEvents({ address: coordinator, abi: coordinatorAbi, eventName: 'Fulfilled', args: { requestId } as never, fromBlock: BigInt(request.requestBlock), toBlock: 'latest' });
-        const fulfillTx = logs[0]?.transactionHash;
-        if (!fulfillTx) throw new Error(`No Fulfilled event for ${requestId}`);
+        const fulfillTx = await retrying(async () => {
+          const logs = await client.getContractEvents({ address: coordinator, abi: coordinatorAbi, eventName: 'Fulfilled', args: { requestId } as never, fromBlock: BigInt(request.requestBlock), toBlock: 'latest' });
+          return logs[0]?.transactionHash;
+        }, nextBlock, tries, `No Fulfilled event for ${requestId}`);
         console.log(`fulfilled with Beta ${request.beta}: ${txLink(chainId, fulfillTx)}`);
-        return { request, fulfillTx, fulfillReceipt: await client.getTransactionReceipt({ hash: fulfillTx }) };
+        return { request, fulfillTx, fulfillReceipt: await retrying(() => client.getTransactionReceipt({ hash: fulfillTx }), nextBlock, tries, `receipt of ${fulfillTx}`) };
       }
       if (request.status === Status.Refunded) throw new Error(`${requestId} was refunded`);
-      if (await client.getBlockNumber() > BigInt(request.deadline)) throw new Error(`${requestId} passed its deadline unfulfilled`);
+      if (await retrying(() => client.getBlockNumber(), nextBlock, tries, 'getBlockNumber') > BigInt(request.deadline)) throw new Error(`${requestId} passed its deadline unfulfilled`);
       await nextBlock();
     }
   }
@@ -241,10 +249,10 @@ export function result(value: Record<string, unknown>) {
   console.log(`RESULT ${JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v)}`);
 }
 
-/** Runs a demo's main and exits nonzero on any failed check. */
+/** Runs a demo's main and exits nonzero on any failed check. The error is printed without URLs (RPC_URL may be keyed). */
 export function main(body: () => Promise<void>) {
   body().catch(error => {
-    console.error(`FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`FAILED: ${redactUrls(error instanceof Error ? error.message : String(error))}`);
     process.exitCode = 1;
   });
 }
