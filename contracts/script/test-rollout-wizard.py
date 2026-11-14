@@ -28,6 +28,12 @@ SINGLETON = '0x00000000000000000000000029fcb43b46531bca003ddc8fcb67ffe91900c762'
 KEY_SHAPED = '0x' + '4c' * 32
 TX = '0x' + '7a' * 32
 EXPLORER = 'https://rootstock-testnet.blockscout.com'
+# A keyed RPC URL; the wizard must never print it.
+KEYED_RPC = 'https://logs.example/v1/s3cr3tk3y'
+PAYEE = '0x' + 'ee' * 20
+# getProvingKey(uint32) of the Active Key: keyHash, Payee, state, ...
+PROVING_KEY = '0x' + 'ab' * 32 + '00' * 12 + 'ee' * 20 + '00' * 31 + '01'
+PAYEE_CALLS = {'activeKeyId()(uint32)': '2', 'getProvingKey(uint32)': PROVING_KEY}
 # The stage ids, in order, as the wizard lists them.
 STEPS = subprocess.run(['bash', str(WIZARD), '--list-stages'], capture_output=True, text=True,
                        check=True).stdout.split()
@@ -254,12 +260,13 @@ DEMOS = ['dice', 'read-path', 'reverting-consumer', 'withdraw-fees', 'recompute-
 
 
 class GateTest(unittest.TestCase):
-    def gate_run(self, logs, answers, stub=None, mtime=None):
+    def gate_run(self, logs, answers, stub=None, mtime=None, logs_rpc='https://logs.example', state=None):
         w = WizardRun(self)
-        w.set_stub(stub or {})
+        w.set_stub({'calls': PAYEE_CALLS} | (stub or {}))
         # The gate run started a minute ago; the logs below are written in it.
-        w.set_state(done_state(*before('gate')) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': 'https://logs.example',
-                                                   'PROXY': PROXY, 'DEMO_SINCE_gate': str(int(time.time()) - 60)})
+        w.set_state(done_state(*before('gate')) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': logs_rpc,
+                                                   'PROXY': PROXY, 'DEMO_SINCE_gate': str(int(time.time()) - 60)}
+                    | (state or {}))
         (w.dir / 'gate').mkdir()
         for name, text in logs.items():
             log = w.dir / 'gate' / f'demo-{name}.log'
@@ -296,9 +303,18 @@ class GateTest(unittest.TestCase):
         logs = {n: GOOD_LOG for n in DEMOS[:3]} | {'withdraw-fees': safe_tx}
         stub = {'receipts': {TX: {'status': '1 (success)', 'blockNumber': '950'}}}
         w, out = self.gate_run(logs, answers=f'\n{EXPLORER}/tx/{TX}\n', stub=stub)
-        self.assertEqual(w.state()['WITHDRAW_TX'], TX)
-        self.assertIn(f'WITHDRAW_TX={TX} RPC_URL="$LOGS_RPC_URL" npm run demo:withdraw-fees', out.stdout)
+        self.assertEqual(w.state()['WITHDRAW_TX_gate'], TX)
+        self.assertIn(f'PAYEE={PAYEE} WITHDRAW_TX={TX} RPC_URL="$LOGS_RPC_URL" npm run demo:withdraw-fees', out.stdout)
         self.assertNotIn('DONE_gate', w.state())
+
+    def test_the_withdraw_fees_command_names_the_payee_of_the_active_key(self):
+        w, out = self.gate_run({n: GOOD_LOG for n in DEMOS[:3]}, answers='\nn\n')
+        self.assertIn(f'PAYEE={PAYEE} RPC_URL="$LOGS_RPC_URL" npm run demo:withdraw-fees', out.stdout)
+
+    def test_a_withdrawal_of_another_phase_is_not_reused(self):
+        state = {'WITHDRAW_TX': TX, 'WITHDRAW_TX_final': TX}
+        w, out = self.gate_run({n: GOOD_LOG for n in DEMOS[:3]}, answers='\nn\n', state=state)
+        self.assertNotIn('WITHDRAW_TX=0x', out.stdout)
 
     def test_passes_when_every_demo_log_ends_with_a_result_on_chain_31(self):
         w, out = self.gate_run({n: GOOD_LOG for n in DEMOS}, answers='')
@@ -340,6 +356,30 @@ class GateTest(unittest.TestCase):
         self.assertIn('not decided yet', out.stdout)
         self.assertEqual(w.state()['LOGS_RPC_URL'], 'https://logs.example')
         self.assertIn('logs --rpc-url https://logs.example', w.calls())
+
+
+class RpcUrlRedactionTest(unittest.TestCase):
+    def test_the_logs_rpc_check_and_the_demo_command_do_not_print_the_url(self):
+        w, out = GateTest.gate_run(self, {}, answers='\nn\n', logs_rpc=KEYED_RPC)
+        self.assertIn('demo:dice', out.stdout)
+        self.assertNotIn('s3cr3tk3y', out.stdout + out.stderr)
+
+    def test_a_logs_rpc_that_fails_the_check_is_not_printed(self):
+        w, out = GateTest.gate_run(self, {}, answers='n\n', stub={'logsRc': 1}, logs_rpc=KEYED_RPC)
+        self.assertIn('does not serve eth_getLogs', out.stdout)
+        self.assertNotIn('s3cr3tk3y', out.stdout + out.stderr)
+
+    def test_a_failed_missed_deadline_count_does_not_print_the_url(self):
+        w = WizardRun(self)
+        (w.bin / 'npm').write_text(f'#!/bin/sh\necho "HTTP request failed. URL: {KEYED_RPC} Status: 429"\nexit 1\n')
+        (w.bin / 'npm').chmod(0o755)
+        w.set_state(done_state(*before('missed')) | {'RPC_URL': 'https://rpc.example', 'LOGS_RPC_URL': KEYED_RPC,
+                                                     'PROXY': PROXY, 'OUT_WINDOW_FROM': '950', 'OUT_WINDOW_TO': '960'})
+        out = w.run()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn('missed-deadlines failed', out.stdout)
+        self.assertIn('URL: <redacted-url> Status: 429', out.stdout)
+        self.assertNotIn('s3cr3tk3y', out.stdout + out.stderr)
 
 
 class StageOrderTest(unittest.TestCase):

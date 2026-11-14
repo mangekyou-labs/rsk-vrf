@@ -261,7 +261,7 @@ Post the Incident Note **not more than 24 hours after the Deadline**.
 
    ```sh
    aws logs filter-log-events --region <region> --log-group-name /rsk-vrf/<host> \
-     --filter-pattern '"missed_deadline"' --query 'events[-1].message' --output text > missed-<requestId>.json
+     --filter-pattern '"missed_deadline"' --output json | jq -r '.events[-1].message' > missed-<requestId>.json
    jq '{requestId, deadline, block, proofUnavailable, keyHash: .proof.keyHash}' missed-<requestId>.json
    ```
 
@@ -449,6 +449,8 @@ Do not use `systemctl stop rsk-vrf`. It stops rskj too. To start the worker agai
 A stopped worker sends no heartbeat, so its healthchecks.io check Pages after about 5 minutes. In a drill this Page is expected. Acknowledge it, and do not do section 1.
 
 ### 8.1 Failover drill
+
+This drill needs two hosts, `primary` and `backup`, each with its own worker and Fulfiller. With one host, stopping its worker is an outage, not a failover: do section 8.2 instead.
 
 1. **Announce the drill in the Warn channel.** Post this text in the chat webhook channel:
 

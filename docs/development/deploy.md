@@ -11,6 +11,8 @@ cast chain-id --rpc-url "$RPC_URL"   # prints 31
 
 The public node does not serve `eth_getLogs`. `deploy.sh`, `verify.sh`, `safe-tx.sh` and `CheckDeployment` do not need it. `pending-requests.sh` and the demo scripts do, so the runbooks and [the demo walkthrough](../demo.md) run them with an RPC that serves it. The workers read from the rskj node on their own host.
 
+Deploy through the public node. A keyed RPC that serves `eth_getLogs` can refuse a transaction as large as the implementation's creation with HTTP 413, which `forge` reports as a failed broadcast.
+
 ## Chain 31 rollout
 
 Each step of the rollout (#41) and where it is done:

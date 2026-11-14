@@ -8,3 +8,6 @@ contracts/broadcast/
 
 # State and logs of contracts/script/rollout-wizard.sh.
 /.rollout-31/
+
+# Output of `worker keygen` in docs/runbooks/rotation.md. proving-key.hex is the Proving Key's secret.
+proving-key.*

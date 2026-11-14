@@ -455,6 +455,11 @@ request_id_of() {
 
 active_key_id() { cast call --rpc-url "$RPC_URL" "$PROXY" 'activeKeyId()(uint32)' | cut -d' ' -f1; }
 key_hash_of() { printf '0x%s' "$(word "$(cast call --rpc-url "$RPC_URL" "$PROXY" 'getProvingKey(uint32)' "$1")" 0)"; }
+payee_of() { local w; w=$(word "$(cast call --rpc-url "$RPC_URL" "$PROXY" 'getProvingKey(uint32)' "$1")" 1); printf '0x%s' "${w:24}"; }
+
+# redact_urls: a keyed RPC URL is a secret, so command output that may quote one (cast, forge
+# and viem errors do) goes through this before it is printed.
+redact_urls() { sed -E 's#https?://[^[:space:]"]*#<redacted-url>#g'; }
 
 # need_logs_rpc: the steps that read logs need an RPC that serves eth_getLogs. Which one
 # to use is not decided yet (#41), so the wizard asks for LOGS_RPC_URL and checks it with
@@ -467,14 +472,14 @@ need_logs_rpc() {
       say "Which logs-capable RPC of chain 31 to use is not decided yet: enter the one you use."
       ask_public LOGS_RPC_URL "LOGS_RPC_URL:" is_link
     fi
-    note "checking that $LOGS_RPC_URL is chain 31 and serves eth_getLogs (cast logs)"
+    note "checking that LOGS_RPC_URL is chain 31 and serves eth_getLogs (cast logs)"
     if [[ "$(cast chain-id --rpc-url "$LOGS_RPC_URL" 2>/dev/null)" == 31 ]] &&
        latest=$(cast block-number --rpc-url "$LOGS_RPC_URL" 2>/dev/null) &&
        cast logs --rpc-url "$LOGS_RPC_URL" --from-block "$latest" --to-block "$latest" >/dev/null 2>&1; then
       printf '  %s✓%s LOGS_RPC_URL serves eth_getLogs on chain 31\n' "$GREEN" "$RESET"
       return 0
     fi
-    warn "LOGS_RPC_URL ($LOGS_RPC_URL) is not chain 31, or it does not serve eth_getLogs."
+    warn "LOGS_RPC_URL is not chain 31, or it does not serve eth_getLogs."
     if confirm "Enter a different LOGS_RPC_URL?"; then
       LOGS_RPC_URL=""; put LOGS_RPC_URL ""
     else
@@ -511,14 +516,15 @@ show_demo_command() {
   say "(never in this shell), from the repository root:"
   printf '\n    %s{ %sRPC_URL="$LOGS_RPC_URL" npm run demo:%s --prefix worker 2>&1; echo "exit $?"; } | tee %q%s\n\n' \
     "$BOLD" "${3:+$3 }" "$1" "$2" "$RESET"
-  note "LOGS_RPC_URL=$LOGS_RPC_URL. Setup is in docs/demo.md: (cd contracts && forge build), (cd worker && npm ci)."
+  note "Set LOGS_RPC_URL there first (it is in $ENV_FILE; the wizard does not print it)."
+  note "Setup is in docs/demo.md: (cd contracts && forge build), (cd worker && npm ci)."
 }
 
 # check_demo PHASE NAME: does not go on until the script's log passes. A log passes only if
 # it was written in this run of PHASE (from DEMO_SINCE_<PHASE>, set when the phase's first
 # check starts) and names the coordinator of the deployment record.
 check_demo() {
-  local phase="$1" name="$2" log="$ROLLOUT_DIR/$1/demo-$2.log" extra="" since
+  local phase="$1" name="$2" log="$ROLLOUT_DIR/$1/demo-$2.log" extra="" since tx_key="WITHDRAW_TX_$1"
   mkdir -p "$ROLLOUT_DIR/$phase"
   [[ -n "$(state "DEMO_SINCE_$phase")" ]] || put "DEMO_SINCE_$phase" "$(date -u +%s)"
   since=$(state "DEMO_SINCE_$phase")
@@ -530,7 +536,10 @@ check_demo() {
     say "withdraw-fees: when the Payee is the Admin Safe, the script prints the Safe transaction"
     say "and exits 3. Execute it in the Safe UI; the wizard then asks for its link and gives the"
     say "command with WITHDRAW_TX, which verifies it, into the same file."
-    [[ -n "$(state WITHDRAW_TX)" ]] && extra="WITHDRAW_TX=$(state WITHDRAW_TX)"
+    # The script needs PAYEE (or REQUEST_ID); the fees of this phase went to the Active Key's Payee.
+    # The withdrawal is per phase: the gate's Safe transaction does not verify the final run.
+    extra="PAYEE=$(payee_of "$(active_key_id)")"
+    [[ -n "$(state "$tx_key")" ]] && extra+=" WITHDRAW_TX=$(state "$tx_key")"
   fi
   while :; do
     printf '\n  %sdemo:%s%s\n' "$BOLD" "$name" "$RESET"
@@ -540,14 +549,14 @@ check_demo() {
       printf '  %s✓%s demo:%s passed\n' "$GREEN" "$RESET" "$name"
       return 0
     fi
-    if [[ "$name" == withdraw-fees && -z "$extra" ]] && grep -q 'WITHDRAW_TX=' "$log" 2>/dev/null; then
+    if [[ "$name" == withdraw-fees && "$extra" != *WITHDRAW_TX=* ]] && grep -q 'WITHDRAW_TX=' "$log" 2>/dev/null; then
       say "demo:withdraw-fees printed the Safe transaction. Execute it in the Safe UI."
-      ask_tx WITHDRAW_TX "Paste the explorer link of the executed Safe transaction"
-      extra="WITHDRAW_TX=$WITHDRAW_TX"
+      ask_tx "$tx_key" "Paste the explorer link of the executed Safe transaction"
+      extra+=" WITHDRAW_TX=${!tx_key}"
       continue
     fi
     warn "demo:$name did not pass: $log is not from this run, names another coordinator, has a FAILED line, or has no RESULT line and exit 0."
-    [[ -s "$log" ]] && tail -n 5 "$log" | sed 's/^/    /'
+    [[ -s "$log" ]] && tail -n 5 "$log" | redact_urls | sed 's/^/    /'
     if ! confirm "Rerun demo:$name and check again?"; then
       warn "The gate is not passed. Stopped; rerun the wizard to resume at demo:$name."
       exit 1
@@ -563,11 +572,11 @@ run_missed() {
   say "Running:"
   printf '    RPC_URL="$LOGS_RPC_URL" npm run demo:missed-deadlines --prefix worker -- %s\n' "${args[*]}"
   if ! out=$(RPC_URL="$LOGS_RPC_URL" npm run --silent demo:missed-deadlines --prefix "$REPO_ROOT/worker" -- "${args[@]}" 2>&1); then
-    printf '%s\n' "$out" | tail -n 5 | sed 's/^/    /'
+    printf '%s\n' "$out" | tail -n 5 | redact_urls | sed 's/^/    /'
     warn "missed-deadlines failed. Fix the cause, then rerun the wizard."
     exit 1
   fi
-  printf '%s\n' "$out" | grep -vE '^RESULT' | sed 's/^/    /' || true
+  printf '%s\n' "$out" | grep -vE '^RESULT' | redact_urls | sed 's/^/    /' || true
   MISSED_COUNT=$(printf '%s\n' "$out" | grep -E '^RESULT \{' | tail -n1 | sed 's/^RESULT //' | jq -r .count)
   [[ "$MISSED_COUNT" =~ ^[0-9]+$ ]] || { warn "missed-deadlines printed no count."; exit 1; }
 }
@@ -628,7 +637,7 @@ drill_row() {
             request_id=$(result_field "$log" requestId); request_tx=$(result_field "$log" requestTx); break
           fi
           warn "$log has no RESULT line on chain 31, or it has a FAILED line."
-          [[ -s "$log" ]] && tail -n 5 "$log" | sed 's/^/    /'
+          [[ -s "$log" ]] && tail -n 5 "$log" | redact_urls | sed 's/^/    /'
           if ! confirm "Rerun the script and check again?"; then outcome="FAILED: see $log"; break; fi
         fi
       done
@@ -694,7 +703,7 @@ stage_rpc() {
   while :; do
     ask_default RPC_URL "RPC_URL:" "$PUBLIC_RPC"
     [[ "$(cast chain-id --rpc-url "$RPC_URL" 2>/dev/null)" == 31 ]] && break
-    warn "$RPC_URL is not chain 31."
+    warn "That RPC_URL is not chain 31."
     RPC_URL=""; put RPC_URL ""
   done
   printf '  %s✓%s cast chain-id prints 31\n' "$GREEN" "$RESET"
@@ -790,7 +799,7 @@ stage_check() {
   printf '\n    (cd contracts && forge script script/CheckDeployment.s.sol:CheckDeployment --rpc-url "$RPC_URL" \\\n'
   printf '      --sig "run(string,address)" ../%s "$SAFE")\n\n' "$RECORD"
   until (cd "$REPO_ROOT/contracts" && forge script script/CheckDeployment.s.sol:CheckDeployment --rpc-url "$RPC_URL" \
-          --sig "run(string,address)" "$RECORD_ABS" "$SAFE" 2>&1 | tail -n 5 | sed 's/^/    /'; exit "${PIPESTATUS[0]}"); do
+          --sig "run(string,address)" "$RECORD_ABS" "$SAFE" 2>&1 | tail -n 5 | redact_urls | sed 's/^/    /'; exit "${PIPESTATUS[0]}"); do
     warn "The check failed. Mismatch(\"<field>\") names the first value that differs."
     confirm "Check again?" || exit 1
   done
@@ -964,7 +973,7 @@ stage_outage() {
     outage_begin 2 "Only demo requests are Pending"
     need_logs_rpc
     say "Pending requests of the Active Key:"
-    RPC_URL="$LOGS_RPC_URL" "$REPO_ROOT/contracts/script/pending-requests.sh" "$RECORD_ABS" "$(key_hash_of "$(active_key_id)")" 2>&1 | sed 's/^/    /' || true
+    RPC_URL="$LOGS_RPC_URL" "$REPO_ROOT/contracts/script/pending-requests.sh" "$RECORD_ABS" "$(key_hash_of "$(active_key_id)")" 2>&1 | redact_urls | sed 's/^/    /' || true
     confirm "Is each listed request from the demo key (or is the list empty)?" || { warn "Wait until the other requests are fulfilled, then rerun."; exit 1; }
     outage_end 2
   fi
