@@ -11,7 +11,7 @@ import { applyParameters, isPlaceholder, loadParameters } from './parameters.ts'
 import { DEFAULT_RELAYS } from './relays.ts';
 import { AwsSecretSource, EMPTY_SECRET_MESSAGE, provingKeyLoader } from './secrets.ts';
 import { createWorker, RESERVE_FULFILLS, type DrandPin } from './worker.ts';
-import { runWorkerLoop } from './loop.ts';
+import { parsePollIntervalMs, runWorkerLoop } from './loop.ts';
 import { jsonLine, type WatchdogConfig } from './watchdog.ts';
 
 /** A startup failure whose message names configuration only, so it is safe to print. */
@@ -70,6 +70,19 @@ function graceBlocks(): number {
   return Number(raw);
 }
 
+/** POLL_INTERVAL_MS, or POLL_INTERVAL_SECONDS for the same delay. Set one or neither. */
+function pollIntervalMs(): number {
+  const rawMs = process.env.POLL_INTERVAL_MS;
+  const rawSeconds = process.env.POLL_INTERVAL_SECONDS;
+  if (rawMs && rawSeconds) throw new Error('Invalid poll interval');
+  if (rawSeconds) {
+    const interval = parsePollIntervalMs(rawSeconds) * 1_000;
+    if (!Number.isSafeInteger(interval) || interval <= 0) throw new Error('Invalid poll interval');
+    return interval;
+  }
+  return parsePollIntervalMs(rawMs);
+}
+
 /** loadFulfiller signs with the KMS key when FULFILLER_KMS_KEY_ID is set, else with FULFILLER_PRIVATE_KEY (development only). */
 async function loadFulfiller(): Promise<LocalAccount> {
   const keyId = process.env.FULFILLER_KMS_KEY_ID;
@@ -97,6 +110,7 @@ async function main() {
   if (watchdog.topUpFulfillments! <= RESERVE_FULFILLS) throw new Error('Invalid top-up threshold');
   const heartbeatUrl = new URL(required('HEALTHCHECKS_PING_URL')).toString();
   const grace = graceBlocks();
+  const intervalMs = pollIntervalMs();
   const relays = relayUrls();
   const rpcUrl = new URL(required('RSK_RPC_URL')).toString();
   const coordinatorFor = coordinatorAddress();
@@ -121,9 +135,10 @@ async function main() {
     const empty = key.error === EMPTY_SECRET_MESSAGE ? { level: 'error', error: EMPTY_SECRET_MESSAGE } : {};
     process.stdout.write(`${jsonLine({ ...empty, event: 'key_sync', keyId: key.keyId, keyHash: key.keyHash, held: key.held })}\n`);
   }
-  process.stdout.write(`${jsonLine({ event: 'polling', coordinator, workerId: watchdog.workerId })}\n`);
+  process.stdout.write(`${jsonLine({ event: 'polling', coordinator, workerId: watchdog.workerId, pollIntervalMs: intervalMs })}\n`);
   await runWorkerLoop({
     pollOnce: worker.pollOnce,
+    pollIntervalMs: intervalMs,
     signal: stop.signal,
     report: line => process.stdout.write(`${line}\n`),
     heartbeat: async () => {

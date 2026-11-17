@@ -99,6 +99,45 @@ describe('worker run', () => {
     assertNoSecret(stderr + stdout, pinWord, 'startup');
   });
 
+  it('refuses a non-numeric or zero poll interval and does not print configuration', async () => {
+    for (const interval of ['0', '10 seconds']) {
+      const { code, stdout, stderr } = await runWorker({
+        RSK_RPC_URL: 'http://127.0.0.1:1',
+        COORDINATOR_ADDRESS: `0x${'11'.repeat(20)}`,
+        FULFILLER_PRIVATE_KEY: fulfillerKey,
+        DRAND_PIN_PUBLIC_KEY: [pinWord, pinWord, pinWord, pinWord].join(','),
+        DRAND_PIN_GENESIS: '1727521075',
+        DRAND_PIN_PERIOD: '3',
+        POLL_INTERVAL_MS: interval,
+      });
+      assert.equal(code, 1, interval);
+      assert.equal(stdout, '', interval);
+      assert.equal(stderr, startup, interval);
+      assertNoSecret(stderr + stdout, fulfillerKey, 'startup');
+    }
+  });
+
+  it('refuses a bad seconds poll interval, or both interval spellings at once', async () => {
+    const pinned = {
+      RSK_RPC_URL: 'http://127.0.0.1:1',
+      COORDINATOR_ADDRESS: `0x${'11'.repeat(20)}`,
+      FULFILLER_PRIVATE_KEY: fulfillerKey,
+      DRAND_PIN_PUBLIC_KEY: [pinWord, pinWord, pinWord, pinWord].join(','),
+      DRAND_PIN_GENESIS: '1727521075',
+      DRAND_PIN_PERIOD: '3',
+    };
+    for (const env of [
+      { POLL_INTERVAL_SECONDS: '0' },
+      { POLL_INTERVAL_MS: '60000', POLL_INTERVAL_SECONDS: '60' },
+    ]) {
+      const { code, stdout, stderr } = await runWorker({ ...pinned, ...env });
+      assert.equal(code, 1);
+      assert.equal(stdout, '');
+      assert.equal(stderr, startup);
+      assertNoSecret(stderr + stdout, fulfillerKey, 'startup');
+    }
+  });
+
   it('names an alert parameter still holding the Terraform placeholder', async () => {
     const { code, stdout, stderr } = await runWorker({
       RSK_RPC_URL: 'http://127.0.0.1:1',

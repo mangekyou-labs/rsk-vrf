@@ -168,7 +168,7 @@ From [Oracle Worker Design](https://github.com/mangekyou-labs/rsk-vrf/issues/21)
 
 - **Runtime:** stateless TypeScript on viem. The prover is a `@noble/curves` port of Chainlink's ECVRF with a deterministic RFC 6979 nonce over `sk ‖ alpha`. It must produce byte-identical proofs to the Go vectors before going live. The Proving Key lives only in memory; it is never written to disk, logs or error traces.
 - **Chain access:** the worker reads its own rskj node (`VETIVER-9.0.4`).
-  - On start it backfills `RandomnessRequested`, `Fulfilled` and `Refunded` from `latest − 2,400 − margin`, then polls every 10 s.
+  - On start it backfills `RandomnessRequested`, `Fulfilled` and `Refunded` from `latest − 2,400 − margin`, then polls every `POLL_INTERVAL_MS` (10 s by default; the keyed-RPC demo uses 60 s to stay inside the provider's daily quota — see the worker README's RPC request budget).
   - Logs are hints only. Before proving, the worker reads the request record at `latest`.
   - A request is dropped once its Fulfilled or Refunded event is 12 blocks deep, and a reorged-out fulfillment is re-sent.
 - **drand:**

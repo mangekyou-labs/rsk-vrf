@@ -7,8 +7,12 @@ locals {
   # The worker reads every parameter directly under parameter_path as an
   # environment variable of the same name.
   config = {
-    WORKER_ID            = "demo"
-    GRACE_BLOCKS         = "0"
+    WORKER_ID    = "demo"
+    GRACE_BLOCKS = "0"
+    # The demo reads through a keyed RPC: 60 s keeps an idle worker near
+    # 20k requests a day, inside the provider's 25k daily quota. See
+    # worker/README.md, "RPC request budget".
+    POLL_INTERVAL_MS     = "60000"
     RSK_RPC_URL          = var.rsk_rpc_url
     COORDINATOR_ADDRESS  = var.coordinator_address
     DRAND_PIN_PUBLIC_KEY = var.drand_pin.public_key

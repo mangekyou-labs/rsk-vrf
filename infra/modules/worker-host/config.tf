@@ -8,8 +8,12 @@ locals {
   # The worker reads every parameter directly under parameter_path as an
   # environment variable of the same name.
   config = {
-    WORKER_ID            = var.name
-    GRACE_BLOCKS         = tostring(var.grace_blocks)
+    WORKER_ID    = var.name
+    GRACE_BLOCKS = tostring(var.grace_blocks)
+    # Each host reads its own rskj, which has no daily quota: keep the
+    # worker default. Keyed-RPC deployments must size this to the quota;
+    # see worker/README.md, "RPC request budget".
+    POLL_INTERVAL_MS     = "10000"
     RSK_RPC_URL          = "http://rskj:4444"
     COORDINATOR_ADDRESS  = var.coordinator_address
     DRAND_PIN_PUBLIC_KEY = var.drand_pin.public_key
