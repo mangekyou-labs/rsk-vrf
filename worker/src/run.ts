@@ -70,6 +70,14 @@ function graceBlocks(): number {
   return Number(raw);
 }
 
+/** RPC_UNHEALTHY_PAGE_MINUTES: unset or empty is 15, anything else must be a positive whole number. */
+function rpcUnhealthyPageMinutes(): number {
+  const raw = process.env.RPC_UNHEALTHY_PAGE_MINUTES;
+  if (raw === undefined || raw === '') return 15;
+  if (!/^\d+$/.test(raw) || Number(raw) <= 0 || !Number.isSafeInteger(Number(raw) * 60)) throw new Error('Invalid rpc_unhealthy page minutes');
+  return Number(raw);
+}
+
 /** POLL_INTERVAL_MS, or POLL_INTERVAL_SECONDS for the same delay. Set one or neither. */
 function pollIntervalMs(): number {
   const rawMs = process.env.POLL_INTERVAL_MS;
@@ -106,6 +114,7 @@ async function main() {
     pageToken: optional('ALERT_PAGE_TOKEN'),
     allowedFulfillers: (optional('OWN_FULFILLER_ADDRESSES') ?? '').split(',').filter(Boolean).map(value => getAddress(value.trim().toLowerCase())),
     topUpFulfillments: BigInt(process.env.TOP_UP_FULFILLMENTS ?? '100'),
+    rpcUnhealthyPageMinutes: rpcUnhealthyPageMinutes(),
   };
   if (watchdog.topUpFulfillments! <= RESERVE_FULFILLS) throw new Error('Invalid top-up threshold');
   const heartbeatUrl = new URL(required('HEALTHCHECKS_PING_URL')).toString();

@@ -67,7 +67,7 @@ async function setup() {
   const rpcUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const chain = defineChain({ id: 33, name: 'test', nativeCurrency: { name: 'RBTC', symbol: 'RBTC', decimals: 18 }, rpcUrls: { default: { http: [rpcUrl] } } });
   const watchdog = { workerId: 'worker', pageUrl: `${rpcUrl}/page`, warningUrl: `${rpcUrl}/warn` };
-  const makeWorker = (fulfiller: LocalAccount = privateKeyToAccount(`0x${'34'.repeat(32)}`), extra: { watchdog?: typeof watchdog } = {}) => createWorker({ ...extra, rpcUrl, coordinator: address, chain, fulfiller, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, fetch: async () => Response.json({ round: 1, signature }) });
+  const makeWorker = (fulfiller: LocalAccount = privateKeyToAccount(`0x${'34'.repeat(32)}`), extra: { watchdog?: typeof watchdog & { rpcUnhealthyPageMinutes?: number }; nowSeconds?: () => bigint } = {}) => createWorker({ rpcUrl, coordinator: address, chain, fulfiller, loadProvingKey: async () => key, drandPin: pin, relayUrl: 'http://relay', nowSeconds: () => 10n, ...extra, fetch: async () => Response.json({ round: 1, signature }) });
   return { state, server, makeWorker, watchdog };
 }
 it('signs fulfillments with an injected Fulfiller account such as the KMS one', () => scenario(async ({ state, makeWorker }) => {
@@ -173,6 +173,28 @@ it('skips the sync check on a node without eth_syncing but still fails the poll 
   state.alerts = []; state.syncing = 'missing'; await worker.pollOnce();
   assert.ok(!state.alerts.some(alert => alert.includes('node_unhealthy')));
   state.syncing = 'broken'; await assert.rejects(worker.pollOnce());
+}));
+it('pages once rpc_unhealthy lasts the configured minutes, and restarts the clock after a clean poll', () => scenario(async ({ state, makeWorker, watchdog }) => {
+  let clock = 1_000n;
+  const worker = makeWorker(undefined, { watchdog: { ...watchdog, rpcUnhealthyPageMinutes: 15 }, nowSeconds: () => clock });
+  const pages = () => state.alerts.filter(alert => alert.includes('"level":"page"') && alert.includes('rpc_unhealthy'));
+  state.syncing = 'broken';
+  await assert.rejects(worker.pollOnce());
+  assert.ok(state.alerts.some(alert => alert.includes('rpc_unhealthy')), 'the first failure warns');
+  clock += 899n; await assert.rejects(worker.pollOnce());
+  assert.equal(pages().length, 0, 'not yet 15 minutes');
+  clock += 1n; await assert.rejects(worker.pollOnce());
+  assert.equal(pages().length, 1, 'pages at 15 minutes');
+  assert.match(pages()[0]!, /"since":"1000"/);
+  clock += 60n; await assert.rejects(worker.pollOnce());
+  assert.equal(pages().length, 1, 'pages once per outage');
+  state.syncing = false; await worker.pollOnce();
+  state.syncing = 'broken';
+  clock += 10n; await assert.rejects(worker.pollOnce());
+  clock += 899n; await assert.rejects(worker.pollOnce());
+  assert.equal(pages().length, 1, 'a clean poll restarts the clock');
+  clock += 1n; await assert.rejects(worker.pollOnce());
+  assert.equal(pages().length, 2, 'a new outage pages again');
 }));
 it('can fulfill at the exact twenty-fulfillment reserve and stops one wei below it', () => scenario(async ({ state, makeWorker }) => {
   state.balance = 6_934_399_999n;
