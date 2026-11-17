@@ -74,7 +74,7 @@ function graceBlocks(): number {
 function rpcUnhealthyPageMinutes(): number {
   const raw = process.env.RPC_UNHEALTHY_PAGE_MINUTES;
   if (raw === undefined || raw === '') return 15;
-  if (!/^\d+$/.test(raw) || Number(raw) <= 0 || !Number.isSafeInteger(Number(raw) * 60)) throw new Error('Invalid rpc_unhealthy page threshold');
+  if (!/^\d+$/.test(raw) || Number(raw) <= 0 || !Number.isSafeInteger(Number(raw) * 60)) throw new Error('Invalid rpc_unhealthy page minutes');
   return Number(raw);
 }
 

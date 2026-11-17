@@ -119,7 +119,7 @@ From <time, UTC> to <time, UTC>, the worker on <primary|backup> did not complete
 
 ## 2. rskj is not healthy
 
-`node_unhealthy` (reason `syncing`) means that the local rskj node is not at the chain head. `rpc_unhealthy` means that the worker cannot read from rskj. It is a Warn first; when it lasts `RPC_UNHEALTHY_PAGE_MINUTES` (default 15) without a clean poll, the worker also sends an `rpc_unhealthy` Page with `since`, the Unix time when it started.
+`node_unhealthy` (reason `syncing`) means that the local rskj node is not at the chain head. `rpc_unhealthy` means that the worker cannot read from rskj. It is a Warn first. If each poll has an RPC failure for `RPC_UNHEALTHY_PAGE_MINUTES` (default 15), the worker also sends an `rpc_unhealthy` Page. The field `since` is the Unix time of the first failure. One poll with no RPC failure starts the time again.
 
 Never set the worker to the public node to stop the alert. The worker must read the chain from its own node. Change nothing in `RSK_RPC_URL`. Terraform sets it to `http://rskj:4444`.
 
