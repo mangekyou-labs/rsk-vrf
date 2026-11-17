@@ -36,6 +36,7 @@ aws logs tail /rsk-vrf/<host> --region <region> --since 30m
 | --- | --- | --- |
 | healthchecks.io: a check is down (the Dead-man's Switch) | Page | [1](#1-the-heartbeat-is-missing) |
 | `node_unhealthy`, `rpc_unhealthy` | Warn | [2](#2-rskj-is-not-healthy) |
+| `rpc_unhealthy` for `RPC_UNHEALTHY_PAGE_MINUTES` (default 15) | Page | [2](#2-rskj-is-not-healthy): fix it before Pending requests near their Deadline |
 | `low_balance` | Page | [3](#3-the-fulfiller-balance-is-low) |
 | `top_up_balance` | Warn | [3](#3-the-fulfiller-balance-is-low) |
 | `drand_stall` | Warn | [4](#4-drand-stalls) |
@@ -118,7 +119,7 @@ From <time, UTC> to <time, UTC>, the worker on <primary|backup> did not complete
 
 ## 2. rskj is not healthy
 
-`node_unhealthy` (reason `syncing`) means that the local rskj node is not at the chain head. `rpc_unhealthy` means that the worker cannot read from rskj.
+`node_unhealthy` (reason `syncing`) means that the local rskj node is not at the chain head. `rpc_unhealthy` means that the worker cannot read from rskj. It is a Warn first; when it lasts `RPC_UNHEALTHY_PAGE_MINUTES` (default 15) without a clean poll, the worker also sends an `rpc_unhealthy` Page with `since`, the Unix time when it started.
 
 Never set the worker to the public node to stop the alert. The worker must read the chain from its own node. Change nothing in `RSK_RPC_URL`. Terraform sets it to `http://rskj:4444`.
 

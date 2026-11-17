@@ -163,6 +163,15 @@ export function createWorker(config: WorkerConfig) {
   const now = config.nowSeconds ?? (() => BigInt(Math.floor(Date.now() / 1000)));
   const report = config.report ?? ((line: string) => process.stderr.write(`${line}\n`));
   const watchdog = createWatchdog(config.watchdog, report);
+  // When the current run of rpc_unhealthy began; null while the RPC is healthy.
+  let rpcUnhealthySince: bigint | null = null;
+  const rpcUnhealthy = async () => {
+    rpcUnhealthySince ??= now();
+    await watchdog.alert('warn', 'rpc_unhealthy');
+    if (now() - rpcUnhealthySince >= BigInt((config.watchdog?.rpcUnhealthyPageMinutes ?? 15) * 60)) {
+      await watchdog.alert('page', 'rpc_unhealthy', { since: rpcUnhealthySince }, 'rpc_unhealthy:page');
+    }
+  };
   const relays = (config.relayUrls && config.relayUrls.length > 0 ? config.relayUrls : config.relayUrl ? [config.relayUrl] : []).map(url => url.replace(/\/$/, ''));
   const stalled = new Set<Hex>();
   const incidentRefunds = new Set<Hex>();
@@ -753,7 +762,7 @@ export function createWorker(config: WorkerConfig) {
           } catch (error) {
             if (error instanceof NonceSyncError) throw error;
             rpcFailed = true;
-            await watchdog.alert('warn', 'rpc_unhealthy');
+            await rpcUnhealthy();
             results.push({ requestId, status: 'retry' });
           }
         }
@@ -832,10 +841,14 @@ export function createWorker(config: WorkerConfig) {
             results.push({ requestId: item.requestId, status: 'retry' });
           }
         }
-        if (!rpcFailed) watchdog.clear('rpc_unhealthy');
+        if (!rpcFailed) {
+          rpcUnhealthySince = null;
+          watchdog.clear('rpc_unhealthy');
+          watchdog.clear('rpc_unhealthy:page');
+        }
         return results;
       } catch (error) {
-        await watchdog.alert('warn', 'rpc_unhealthy');
+        await rpcUnhealthy();
         throw error;
       }
     },

@@ -8,6 +8,8 @@ export interface WatchdogConfig {
   workerId: string;
   /** Warn below this many maximum-cap fulfillments; default 100. */
   topUpFulfillments?: bigint;
+  /** Page when rpc_unhealthy lasts this many minutes; default 15. */
+  rpcUnhealthyPageMinutes?: number;
   /** Include both the primary and Backup Worker's Fulfillers. */
   allowedFulfillers?: readonly Address[];
 }

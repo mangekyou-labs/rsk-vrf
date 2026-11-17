@@ -82,6 +82,7 @@ Each primary and Backup Worker independently monitors requests and sends pages t
 - `ALERT_WARNING_URL`: a chat webhook accepting JSON `{ "text": "<alert JSON>" }`.
 - `OWN_FULFILLER_ADDRESSES`: comma-separated addresses of both workers' Fulfillers. The local Fulfiller is always included. Any other fulfillment pages as a possible leaked Proving Key.
 - `TOP_UP_FULFILLMENTS`: warn below this many maximum-cap fulfillment costs, default `100`; must exceed the page floor of `20`.
+- `RPC_UNHEALTHY_PAGE_MINUTES`: `rpc_unhealthy` is a warning; when it lasts this many minutes without a clean poll the worker also pages `rpc_unhealthy` with the `since` time (Unix seconds). Default `15`; must be a positive whole number. A clean poll restarts the clock.
 - `HEALTHCHECKS_PING_URL`: this worker's unique healthchecks.io ping URL. Configure a 1-minute period and a 4-minute grace for the external dead-man's-switch page.
 
 Alerts and runtime logs are structured JSON; integer quantities are decimal strings so publication preserves the complete proof. Pages use ntfy's `urgent` priority. Warnings contain the same JSON in the webhook's `text` field. Failed deliveries log `alert_delivery_failed` without the destination or response body, and retry on the next poll while the condition persists. Configure separate checks and worker identifiers in each region.
